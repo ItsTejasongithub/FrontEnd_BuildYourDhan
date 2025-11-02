@@ -32,7 +32,8 @@ export const loadCSVData = async (filename, folder) => {
   try {
     const response = await fetch(`/data/${folder}/${filename}`);
     if (!response.ok) {
-      console.error(`Failed to fetch ${folder}/${filename}: HTTP ${response.status}`);
+      console.error(`❌ Failed to fetch ${folder}/${filename}: HTTP ${response.status}`);
+      console.error(`   Check if file exists in public/data/${folder}/${filename}`);
       return null;
     }
     
@@ -154,7 +155,7 @@ export const loadFDRates = async () => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
     const lines = text.trim().split('\n');
-    
+
     const rates = { '3M': [], '1Y': [], '3Y': [] };
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
@@ -170,4 +171,49 @@ export const loadFDRates = async () => {
     console.error('Failed to load FD rates:', error);
     return { '3M': [4.5], '1Y': [6.5], '3Y': [7.5] };
   }
+};
+
+/**
+ * Validates that all required asset files exist
+ * Call this during app initialization to catch file naming issues early
+ */
+export const validateAssetFiles = async (assetDefinitions) => {
+  console.log('🔍 Validating asset files...');
+  const missingFiles = [];
+
+  for (const asset of assetDefinitions) {
+    const url = `/data/${asset.category}/${asset.csvFile}`;
+    try {
+      const response = await fetch(url, { method: 'HEAD' });
+      if (!response.ok) {
+        missingFiles.push({
+          id: asset.id,
+          file: asset.csvFile,
+          category: asset.category,
+          expectedPath: url
+        });
+      }
+    } catch (error) {
+      missingFiles.push({
+        id: asset.id,
+        file: asset.csvFile,
+        category: asset.category,
+        expectedPath: url,
+        error: error.message
+      });
+    }
+  }
+
+  if (missingFiles.length > 0) {
+    console.error('❌ Missing or inaccessible asset files:');
+    missingFiles.forEach(({ id, expectedPath }) => {
+      console.error(`   - ${id}: ${expectedPath}`);
+    });
+    console.error(`\n⚠️  Total missing files: ${missingFiles.length}`);
+    console.error('   Please regenerate data using DataCollector.py');
+    return { valid: false, missingFiles };
+  }
+
+  console.log('✅ All asset files validated successfully');
+  return { valid: true, missingFiles: [] };
 };

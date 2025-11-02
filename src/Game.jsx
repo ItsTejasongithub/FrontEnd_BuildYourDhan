@@ -458,7 +458,6 @@ const EVENT_POOL = {
     { message: 'Pet medical emergency', amount: -20000 }
   ],
   gains: [
-    { message: 'Won Kerala lottery!', amount: 25000 },
     { message: 'Diwali bonus from company', amount: 50000 },
     { message: 'Freelance project bonus', amount: 40000 },
     { message: 'Side business profit', amount: 35000 },
@@ -806,7 +805,7 @@ function App() {
   const [investments, setInvestments] = useState({
   savings: { amount: 0, roi: 4 },
   fixedDeposits: [],
-  gold: { grams: 0 },
+  gold: { grams: 0, avgPrice: 0, totalInvested: 0 },
   ppf: { amount: 0, roi: 7.1 },
   
   // ✅ ALL asset categories need same structure:
@@ -1465,13 +1464,16 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
 const GoldCard = () => {
   const currentPricePer10g = getCurrentGoldPrice(currentMonth);
   const gramsToBuy = goldQty; // Use parent state instead of local state
-  
+
   const prevPrice = currentMonth > 0 ? getCurrentGoldPrice(currentMonth - 1) : currentPricePer10g;
   const monthChange = prevPrice > 0 ? ((currentPricePer10g - prevPrice) / prevPrice * 100) : 0;
-  
+
   const myGrams = investments.gold.grams;
+  const avgPrice = investments.gold.avgPrice || 0;
   const pricePerGram = currentPricePer10g / 10;
   const currentValue = myGrams * pricePerGram;
+  const profitLoss = myGrams > 0 ? currentValue - investments.gold.totalInvested : 0;
+  const profitLossPercent = investments.gold.totalInvested > 0 ? (profitLoss / investments.gold.totalInvested * 100) : 0;
   
   return (
     <div className="bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors">
@@ -1504,10 +1506,21 @@ const GoldCard = () => {
             <span className="text-xs text-gray-600">Holdings:</span>
             <span className="font-bold text-gray-800">{myGrams.toFixed(2)}g</span>
           </div>
-          <div className="border-t border-yellow-300 pt-2">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-xs text-gray-600">Avg:</span>
+            <span className="font-bold text-gray-800">{formatCurrency(avgPrice)}/g</span>
+          </div>
+          <div className="border-t border-yellow-300 pt-2 mb-2">
             <div className="text-xs text-gray-600 mb-1">Current Value</div>
             <div className="text-lg font-bold text-gray-800">
               {formatCurrency(currentValue)}
+            </div>
+          </div>
+          <div className="border-t border-yellow-300 pt-2">
+            <div className="text-xs text-gray-600 mb-1">Profit & Loss</div>
+            <div className={`text-xl font-bold ${profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatCurrency(profitLoss)}
+              <span className="text-sm ml-2">({profitLossPercent > 0 ? '+' : ''}{profitLossPercent.toFixed(1)}%)</span>
             </div>
           </div>
         </div>
@@ -1544,15 +1557,24 @@ const GoldCard = () => {
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <button 
+        <button
           onClick={() => {
             const cost = pricePerGram * gramsToBuy;
             if (cost <= pocketCash) {
               setPocketCash(prev => prev - cost);
-              setInvestments(prev => ({
-                ...prev,
-                gold: { grams: prev.gold.grams + gramsToBuy }
-              }));
+              setInvestments(prev => {
+                const newGrams = prev.gold.grams + gramsToBuy;
+                const newTotalInvested = prev.gold.totalInvested + cost;
+                const newAvgPrice = newGrams > 0 ? newTotalInvested / newGrams : 0;
+                return {
+                  ...prev,
+                  gold: {
+                    grams: newGrams,
+                    avgPrice: newAvgPrice,
+                    totalInvested: newTotalInvested
+                  }
+                };
+              });
             }
           }}
           disabled={pricePerGram * gramsToBuy > pocketCash}
@@ -1560,15 +1582,24 @@ const GoldCard = () => {
         >
           Buy
         </button>
-        <button 
+        <button
           onClick={() => {
             if (myGrams >= gramsToBuy) {
               const revenue = pricePerGram * gramsToBuy;
               setPocketCash(prev => prev + revenue);
-              setInvestments(prev => ({
-                ...prev,
-                gold: { grams: prev.gold.grams - gramsToBuy }
-              }));
+              setInvestments(prev => {
+                const newGrams = prev.gold.grams - gramsToBuy;
+                const proportionSold = gramsToBuy / prev.gold.grams;
+                const newTotalInvested = prev.gold.totalInvested * (1 - proportionSold);
+                return {
+                  ...prev,
+                  gold: {
+                    grams: newGrams,
+                    avgPrice: prev.gold.avgPrice, // Keep same avg price
+                    totalInvested: newTotalInvested
+                  }
+                };
+              });
             }
           }}
           disabled={myGrams < gramsToBuy}
@@ -1995,7 +2026,7 @@ const startGame = async () => {
   setInvestments({
     savings: { amount: 0, roi: 4 },
     fixedDeposits: [],
-    gold: { grams: 0 },
+    gold: { grams: 0, avgPrice: 0, totalInvested: 0 },
     ppf: { amount: 0, roi: 7.1 },
     stocks: [],
     mutualFunds: [],

@@ -1,13 +1,13 @@
 # Build Your Dhan - Asset Data Package
 
-Generated: 2025-11-01 16:22:20
+Generated: 2025-11-02 15:26:46
 
 ## 📊 Data Summary
 
 - **Total Categories**: 8
-- **Total Assets**: 123
+- **Total Assets**: 120
 - **Successfully Downloaded**: 120
-- **Success Rate**: 97.6%
+- **Success Rate**: 100.0%
 
 ## 📁 Directory Structure
 
@@ -36,9 +36,9 @@ data/
 ## 📋 Category Details
 
 ### Indian_Stocks
-- Assets: 95
+- Assets: 92
 - Downloaded: 92
-- Success Rate: 96.8%
+- Success Rate: 100.0%
 
 ### Index_Funds
 - Assets: 5
