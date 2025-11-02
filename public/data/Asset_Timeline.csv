@@ -1,0 +1,122 @@
+Category,Asset,First_Year,Last_Year,Total_Records
+Commodities,SILVER,2000,2025,6319
+Commodities,CRUDEOIL_WTI,2000,2025,6326
+Commodities,NATURALGAS,2000,2025,6323
+Commodities,COPPER,2000,2025,6322
+Commodities,WHEAT,2000,2025,6341
+Commodities,COTTON,2000,2025,6479
+Commodities,BRENT,2007,2025,4544
+Commodities,ALUMINIUM,2014,2025,2855
+Crypto_Assets,BTC,2014,2025,4063
+Crypto_Assets,ETH,2017,2025,2914
+Forex,USDINR,2003,2025,5685
+Forex,EURINR,2003,2025,5687
+Forex,GBPINR,2006,2025,5045
+Gold_Investments,Digital_Gold,2009,2025,4147
+Gold_Investments,Physical_Gold,1990,2025,8998
+Index_Funds,NIFTYBEES,2009,2025,4148
+Index_Funds,UTINIFTETF,2015,2025,2507
+Index_Funds,HDFCNIFETF,2015,2025,2438
+Index_Funds,SETFNIF50,2015,2025,2536
+Index_Funds,ICICIB22,2019,2025,1456
+Indian_Stocks,TATAMOTORS,1991,2025,8795
+Indian_Stocks,Tata Motors,1991,2025,8795
+Indian_Stocks,INFY,1996,2025,7492
+Indian_Stocks,WIPRO,1996,2025,7492
+Indian_Stocks,HDFCBANK,1996,2025,7492
+Indian_Stocks,SBIN,1996,2025,7490
+Indian_Stocks,RELIANCE,1996,2025,7489
+Indian_Stocks,ONGC,1996,2025,7489
+Indian_Stocks,M&M,1996,2025,7490
+Indian_Stocks,HINDUNILVR,1996,2025,7492
+Indian_Stocks,ITC,1996,2025,7489
+Indian_Stocks,TATACONSUM,1996,2025,7489
+Indian_Stocks,TITAN,1996,2025,7492
+Indian_Stocks,TATASTEEL,1996,2025,7492
+Indian_Stocks,HINDALCO,1996,2025,7492
+Indian_Stocks,SUNPHARMA,1996,2025,7492
+Indian_Stocks,Hindustan Construction,1996,2025,7492
+Indian_Stocks,GAIL,1997,2025,7162
+Indian_Stocks,AXISBANK,1998,2025,6730
+Indian_Stocks,KOTAKBANK,2001,2025,6056
+Indian_Stocks,TCS,2002,2025,5765
+Indian_Stocks,HCLTECH,2002,2025,5768
+Indian_Stocks,ICICIBANK,2002,2025,5794
+Indian_Stocks,INDUSINDBK,2002,2025,5795
+Indian_Stocks,BAJFINANCE,2002,2025,5794
+Indian_Stocks,BAJAJFINSV,2002,2025,5763
+Indian_Stocks,SHRIRAMFIN,2002,2025,5797
+Indian_Stocks,BAJAJ-AUTO,2002,2025,5797
+Indian_Stocks,HEROMOTOCO,2002,2025,5794
+Indian_Stocks,NESTLEIND,2002,2025,5767
+Indian_Stocks,ASIANPAINT,2002,2025,5794
+Indian_Stocks,APOLLOHOSP,2002,2025,5794
+Indian_Stocks,LT,2002,2025,5797
+Indian_Stocks,ULTRACEMCO,2002,2025,5764
+Indian_Stocks,GRASIM,2002,2025,5794
+Indian_Stocks,BHARTIARTL,2002,2025,5794
+Indian_Stocks,ADANIENT,2002,2025,5796
+Indian_Stocks,BEL,2002,2025,5794
+Indian_Stocks,TRENT,2002,2025,5794
+Indian_Stocks,Weizmann,2002,2025,5794
+Indian_Stocks,Indo National,2002,2025,5793
+Indian_Stocks,HFCL,2002,2025,5763
+Indian_Stocks,Zee Entertainment,2002,2025,5794
+Indian_Stocks,Ashok Leyland,2002,2025,5796
+Indian_Stocks,ITI Limited,2002,2025,5794
+Indian_Stocks,CESC Limited,2002,2025,5794
+Indian_Stocks,Trident,2002,2025,5794
+Indian_Stocks,MARUTI,2003,2025,5530
+Indian_Stocks,JSWSTEEL,2003,2025,5574
+Indian_Stocks,Subex,2003,2025,5486
+Indian_Stocks,Jindal Stainless,2003,2025,5435
+Indian_Stocks,UCO Bank,2003,2025,5462
+Indian_Stocks,NTPC,2004,2025,5183
+Indian_Stocks,Indiabulls Real Estate,2004,2025,5211
+Indian_Stocks,Suzlon Energy,2005,2025,4942
+Indian_Stocks,JP Power Ventures,2005,2025,5071
+Indian_Stocks,Yes Bank,2005,2025,5010
+Indian_Stocks,Saksoft,2005,2025,5056
+Indian_Stocks,TECHM,2006,2025,4731
+Indian_Stocks,GVK Power & Infra,2006,2025,4855
+Indian_Stocks,Vakrangee,2006,2025,4831
+Indian_Stocks,POWERGRID,2007,2025,4456
+Indian_Stocks,ADANIPORTS,2007,2025,4420
+Indian_Stocks,Vodafone Idea,2007,2025,4600
+Indian_Stocks,Websol Energy Systems,2007,2025,4557
+Indian_Stocks,Dish TV India,2007,2025,4574
+Indian_Stocks,Reliance Power,2008,2025,4368
+Indian_Stocks,IRB Infrastructure,2008,2025,4358
+Indian_Stocks,RattanIndia Power,2009,2025,3950
+Indian_Stocks,Adani Power,2009,2025,3997
+Indian_Stocks,Hindustan Copper,2010,2025,3905
+Indian_Stocks,Manappuram Finance,2010,2025,3787
+Indian_Stocks,RattanIndia Enterprises,2012,2025,3268
+Indian_Stocks,Spacenet Enterprises,2013,2025,2951
+Indian_Stocks,INDIGO,2015,2025,2463
+Indian_Stocks,Brightcom Group,2015,2025,2591
+Indian_Stocks,Quick Heal Technologies,2016,2025,2396
+Indian_Stocks,PNB Housing Finance,2016,2025,2222
+Indian_Stocks,SBILIFE,2017,2025,1997
+Indian_Stocks,Sanginita Chemicals,2017,2025,2133
+Indian_Stocks,Vertoz,2017,2025,1960
+Indian_Stocks,5Paisa Capital,2017,2025,1966
+Indian_Stocks,NACL Industries,2017,2025,2117
+Indian_Stocks,Indostar Capital Finance,2018,2025,1841
+Indian_Stocks,Vinny Overseas,2018,2025,1731
+Indian_Stocks,Ujjivan Small Finance Bank,2019,2025,1459
+Indian_Stocks,Ksolves India,2020,2025,1297
+Indian_Stocks,MTAR Technologies,2021,2025,1146
+Indian_Stocks,One97 Communications (Paytm),2021,2025,978
+Indian_Stocks,Easy Trip Planners,2021,2025,1142
+Indian_Stocks,Railtel Corporation,2021,2025,1156
+Indian_Stocks,Honasa Consumer,2023,2025,490
+Mutual_Funds,SBI_Bluechip,2018,2025,1924
+Mutual_Funds,ICICI_Bluechip,2018,2025,1924
+Mutual_Funds,Axis_Midcap,2018,2025,1923
+Mutual_Funds,Kotak_Emerging,2018,2025,1924
+Mutual_Funds,PGIM_Midcap,2018,2025,1924
+Mutual_Funds,Nippon_SmallCap,2018,2025,1923
+Mutual_Funds,HDFC_SmallCap,2018,2025,1861
+REIT,EMBASSY,2019,2025,1628
+REIT,MINDSPACE,2020,2025,1296

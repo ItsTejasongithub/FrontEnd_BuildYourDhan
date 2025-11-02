@@ -13,12 +13,20 @@ export const useMultiplayer = () => {
   const [currentMonth, setCurrentMonth] = useState(0);
   const [currentYear, setCurrentYear] = useState(0);
   const [currentPrices, setCurrentPrices] = useState({});
+  const [randomAssets, setRandomAssets] = useState([]);
   const [error, setError] = useState(null);
   const [myPlayerId, setMyPlayerId] = useState(null);
   const [availableStocks, setAvailableStocks] = useState([]);
   const [availableInvestments, setAvailableInvestments] = useState(['savings']);
-  const [currentEvent, setCurrentEvent] = useState(null); // ✅ NEW: Track year events from server
+  const [currentEvent, setCurrentEvent] = useState(null);
   const socketRef = useRef(null);
+  const [availableMutualFunds, setAvailableMutualFunds] = useState([]);
+  const [availableIndexFunds, setAvailableIndexFunds] = useState([]);
+  const [availableCommodities, setAvailableCommodities] = useState([]);
+  const [availableREITs, setAvailableREITs] = useState([]);
+  const [availableCrypto, setAvailableCrypto] = useState([]);
+  const [availableForex, setAvailableForex] = useState([]);
+  const [gameStartYear, setGameStartYear] = useState(null);
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
@@ -55,12 +63,22 @@ export const useMultiplayer = () => {
       setGameStatus('waiting');
       setPlayers(Object.values(data.room.players));
       
+      if (data.room.gameStartYear !== undefined) {
+        setGameStartYear(data.room.gameStartYear);
+        console.log('📅 Game start year set:', data.room.gameStartYear);
+      }
+      
+      if (data.room.gameData?.randomAssets) {
+        setRandomAssets(data.room.gameData.randomAssets);
+      }
+
       if (data.room.gameData?.stocks) {
         setAvailableStocks(data.room.gameData.stocks);
         console.log('📈 Stocks loaded:', data.room.gameData.stocks.length);
       }
-      
-      // ✅ NEW: Set initial investments
+      if (data.room.gameData?.mutualFunds) {
+        setAvailableMutualFunds(data.room.gameData.mutualFunds);
+      }
       if (data.room.availableInvestments) {
         setAvailableInvestments(data.room.availableInvestments);
       }
@@ -71,13 +89,48 @@ export const useMultiplayer = () => {
       setRoomCode(data.roomCode);
       setGameStatus('waiting');
       setPlayers(Object.values(data.room.players));
-      
+
+      if (data.room.gameStartYear !== undefined) {
+        setGameStartYear(data.room.gameStartYear);
+        console.log('📅 Game start year set:', data.room.gameStartYear);
+      }
+
+      // Load all asset types from server
       if (data.room.gameData?.stocks) {
         setAvailableStocks(data.room.gameData.stocks);
         console.log('📈 Loaded stocks:', data.room.gameData.stocks.length);
       }
-      
-      // ✅ NEW: Load investments when joining
+
+      if (data.room.gameData?.mutualFunds) {
+        setAvailableMutualFunds(data.room.gameData.mutualFunds);
+        console.log('📊 Loaded mutual funds:', data.room.gameData.mutualFunds.length);
+      }
+
+      if (data.room.gameData?.indexFunds) {
+        setAvailableIndexFunds(data.room.gameData.indexFunds);
+        console.log('📈 Loaded index funds:', data.room.gameData.indexFunds.length);
+      }
+
+      if (data.room.gameData?.commodities) {
+        setAvailableCommodities(data.room.gameData.commodities);
+        console.log('🥇 Loaded commodities:', data.room.gameData.commodities.length);
+      }
+
+      if (data.room.gameData?.crypto) {
+        setAvailableCrypto(data.room.gameData.crypto);
+        console.log('₿ Loaded crypto:', data.room.gameData.crypto.length);
+      }
+
+      if (data.room.gameData?.reit) {
+        setAvailableREITs(data.room.gameData.reit);
+        console.log('🏢 Loaded REITs:', data.room.gameData.reit.length);
+      }
+
+      if (data.room.gameData?.forex) {
+        setAvailableForex(data.room.gameData.forex);
+        console.log('💱 Loaded forex:', data.room.gameData.forex.length);
+      }
+
       if (data.room.availableInvestments) {
         setAvailableInvestments(data.room.availableInvestments);
       }
@@ -111,13 +164,42 @@ export const useMultiplayer = () => {
       setCurrentPrices(data.currentPrices);
       setCurrentMonth(0);
       setCurrentYear(0);
-      
-      // ✅ CRITICAL: Load investments on game start
+
+      if (data.gameStartYear !== undefined) {
+        setGameStartYear(data.gameStartYear);
+        console.log('📅 Game start year:', data.gameStartYear);
+      }
+
       if (data.availableInvestments) {
         console.log('💼 Investments on start:', data.availableInvestments);
         setAvailableInvestments(data.availableInvestments);
       }
-      
+
+      // Load all asset types
+      if (data.mutualFunds) {
+        setAvailableMutualFunds(data.mutualFunds);
+      }
+
+      if (data.indexFunds) {
+        setAvailableIndexFunds(data.indexFunds);
+      }
+
+      if (data.commodities) {
+        setAvailableCommodities(data.commodities);
+      }
+
+      if (data.crypto) {
+        setAvailableCrypto(data.crypto);
+      }
+
+      if (data.reit) {
+        setAvailableREITs(data.reit);
+      }
+
+      if (data.forex) {
+        setAvailableForex(data.forex);
+      }
+
       if (data.leaderboard) {
         setLeaderboard(data.leaderboard);
       }
@@ -126,12 +208,14 @@ export const useMultiplayer = () => {
     newSocket.on('month-update', (data) => {
       console.log(`📅 Month ${data.currentMonth} (Year ${data.currentYear})`);
       
-      // ✅ SYNC: Update month from server
       setCurrentMonth(data.currentMonth);
       setCurrentYear(data.currentYear);
       setCurrentPrices(data.currentPrices);
       
-      // ✅ SYNC: Update investments if server sends them
+      if (data.gameStartYear !== undefined) {
+        setGameStartYear(data.gameStartYear);
+      }
+      
       if (data.availableInvestments) {
         setAvailableInvestments(data.availableInvestments);
       }
@@ -149,9 +233,8 @@ export const useMultiplayer = () => {
     newSocket.on('year-event', (data) => {
       console.log('📰 Year event:', data.event.message);
       
-      setCurrentEvent(data.event); // ✅ NEW: Set the event for Game.jsx to handle (popup + cash adjustments)
+      setCurrentEvent(data.event);
       
-      // ✅ CRITICAL: Update investments when unlocked
       if (data.availableInvestments) {
         console.log('🔓 Unlocked investments:', data.availableInvestments);
         setAvailableInvestments(data.availableInvestments);
@@ -166,10 +249,17 @@ export const useMultiplayer = () => {
 
     newSocket.on('transaction-success', (data) => {
       console.log('✅ Transaction successful:', data.type, data.stockId);
+      console.log('💰 Updated portfolio:', data.portfolio);
+      console.log('💵 Updated pocket cash:', data.pocketCash);
+      // Emit event for Game component to update state
+      window.dispatchEvent(new CustomEvent('stock-transaction', { detail: data }));
     });
 
     newSocket.on('investment-success', (data) => {
       console.log('✅ Investment successful:', data.type);
+      console.log('💰 Asset details:', data);
+      // Emit event for Game component to update state
+      window.dispatchEvent(new CustomEvent('asset-transaction', { detail: data }));
     });
 
     return () => {
@@ -232,6 +322,16 @@ export const useMultiplayer = () => {
     socket.emit('get-room-info');
   };
 
+  const buyMutualFund = (mfId, amount) => {
+    if (!socket) return;
+    socket.emit('buy-mutual-fund', { mfId, amount });
+  };
+
+  const sellMutualFund = (mfId, units) => {
+    if (!socket) return;
+    socket.emit('sell-mutual-fund', { mfId, units });
+  };
+
   return {
     socket,
     roomCode,
@@ -243,10 +343,19 @@ export const useMultiplayer = () => {
     currentPrices,
     availableStocks,
     availableInvestments,
+    availableMutualFunds,
+    availableIndexFunds,
+    availableCommodities,
+    availableREITs,
+    availableCrypto,
+    availableForex,
+    gameStartYear,
+    buyMutualFund,
+    sellMutualFund,
     error,
     myPlayerId,
-    currentEvent, // ✅ NEW
-    setCurrentEvent, // ✅ NEW: To clear after modal close
+    currentEvent,
+    setCurrentEvent,
     createRoom,
     joinRoom,
     startGame,
