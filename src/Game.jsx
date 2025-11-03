@@ -38,6 +38,16 @@ console.log('SOLO_MONTH_DURATION (raw):', import.meta.env.VITE_SOLO_MONTH_DURATI
 console.log('SOLO_MONTH_DURATION (parsed):', MONTH_DURATION);
 console.log('URL:', import.meta.env.VITE_SOCKET_URL);
 
+// Global throttle for celebration GIFs per-asset across re-mounts
+const __celebrationLastShownByAsset = {};
+const canShowCelebrationForAsset = (assetKey, currentMonth, cooldownMonths = 6) => {
+  const last = __celebrationLastShownByAsset[assetKey];
+  if (last === undefined || currentMonth - last >= cooldownMonths) {
+    __celebrationLastShownByAsset[assetKey] = currentMonth;
+    return true;
+  }
+  return false;
+};
 // Inject a small shake animation for insufficient cash feedback
 let __shakeStylesInjected = false;
 const ensureShakeStylesInjected = () => {
@@ -1275,6 +1285,8 @@ function App() {
   const [gameStartYear, setGameStartYear] = useState(null);
   const [pocketCash, setPocketCash] = useState(50000);
   const [availableStocks, setAvailableStocks] = useState([]);
+  const [fdConfirm, setFdConfirm] = useState(null); // { index, isMatured }
+  const [fdAmount, setFdAmount] = useState(10000);
   const [availableIndexFunds, setAvailableIndexFunds] = useState([]);
   const [availableCommodities, setAvailableCommodities] = useState([]);
   const [availableREITs, setAvailableREITs] = useState([]);
@@ -1317,6 +1329,8 @@ function App() {
 
   const currentYear = Math.floor(currentMonth / 12);
   const monthInYear = currentMonth % 12;
+
+  // (Removed fit-to-viewport scaling due to layout issues)
 
 
   useEffect(() => {
@@ -1626,6 +1640,9 @@ useEffect(() => {
 const MutualFundCard = ({ fund }) => {
   ensureShakeStylesInjected();
   const [isShaking, setIsShaking] = React.useState(false);
+  const [showGif, setShowGif] = React.useState(false);
+  const [gifKey, setGifKey] = React.useState(0);
+  const gifTimeoutRef = React.useRef(null);
   const currentNAV = getCurrentPrice(fund.id, currentMonth);
   const myMF = investments.mutualFunds.find(m => m.id === fund.id);
   const currentMFAmount = mutualFundAmounts[fund.id] || 5000;
@@ -1652,10 +1669,25 @@ const MutualFundCard = ({ fund }) => {
   const avgNAV = myMF?.avgPrice || 0;
   const currentValue = myUnits * currentNAV;
   const profitLoss = myUnits > 0 ? currentValue - (myUnits * avgNAV) : 0;
+  const profitLossPercent = myUnits > 0 ? (profitLoss / (myUnits * avgNAV)) * 100 : 0;
+
+  React.useEffect(() => {
+    const thresholdHit = profitLossPercent >= 20 || profitLoss >= 10000;
+    if (thresholdHit && canShowCelebrationForAsset(`MF:${fund.id}`, currentMonth, 6)) {
+      if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current);
+      setGifKey(prev => prev + 1);
+      setShowGif(true);
+      gifTimeoutRef.current = setTimeout(() => setShowGif(false), 2500);
+    }
+    return () => { if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current); };
+  }, [profitLoss, profitLossPercent, currentMonth]);
 
   const isLoss = myUnits > 0 && profitLoss < 0;
   return (
-    <div className={`bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
+    <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
+      {showGif && (
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+      )}
       {/* Header - align to AssetCard */}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
@@ -1758,6 +1790,9 @@ const MutualFundCard = ({ fund }) => {
 const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) => {
   ensureShakeStylesInjected();
   const [isShaking, setIsShaking] = React.useState(false);
+  const [showGif, setShowGif] = React.useState(false);
+  const [gifKey, setGifKey] = React.useState(0);
+  const gifTimeoutRef = React.useRef(null);
   const currentPrice = getCurrentPrice(asset.id, currentMonth);
   const myAsset = investments[category]?.find(a => a.id === asset.id);
   
@@ -1828,8 +1863,23 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
   };
 
   const isLoss = myUnits > 0 && profitLoss < 0;
+
+  React.useEffect(() => {
+    const thresholdHit = profitLossPercent >= 20 || profitLoss >= 10000;
+    if (thresholdHit && canShowCelebrationForAsset(`${category}:${asset.id}`, currentMonth, 6)) {
+      if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current);
+      setGifKey(prev => prev + 1);
+      setShowGif(true);
+      gifTimeoutRef.current = setTimeout(() => setShowGif(false), 2500);
+    }
+    return () => { if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current); };
+  }, [profitLoss, profitLossPercent, currentMonth]);
+
   return (
-    <div className={`bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
+    <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
+      {showGif && (
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+      )}
       {/* Header Section */}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
@@ -1977,6 +2027,9 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
 const GoldCard = () => {
   ensureShakeStylesInjected();
   const [isShaking, setIsShaking] = React.useState(false);
+  const [showGif, setShowGif] = React.useState(false);
+  const [gifKey, setGifKey] = React.useState(0);
+  const gifTimeoutRef = React.useRef(null);
   const currentPricePer10g = getCurrentGoldPrice(currentMonth);
   const gramsToBuy = goldQty; // Use parent state instead of local state
 
@@ -1989,9 +2042,23 @@ const GoldCard = () => {
   const currentValue = myGrams * pricePerGram;
   const profitLoss = myGrams > 0 ? currentValue - investments.gold.totalInvested : 0;
   const profitLossPercent = investments.gold.totalInvested > 0 ? (profitLoss / investments.gold.totalInvested * 100) : 0;
+
+  React.useEffect(() => {
+    const thresholdHit = profitLossPercent >= 20 || profitLoss >= 10000;
+    if (thresholdHit && canShowCelebrationForAsset('Gold', currentMonth, 6)) {
+      if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current);
+      setGifKey(prev => prev + 1);
+      setShowGif(true);
+      gifTimeoutRef.current = setTimeout(() => setShowGif(false), 2500);
+    }
+    return () => { if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current); };
+  }, [profitLoss, profitLossPercent, currentMonth]);
   
   return (
-    <div className={`bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors ${isShaking ? 'gv3-shake' : ''}`}>
+    <div className={`relative bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''}`}>
+      {showGif && (
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+      )}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
           <div className="flex items-center gap-2">
@@ -2628,7 +2695,7 @@ const startGame = async () => {
     crypto: [],
     forex: []
   });
-  
+
   // Solo mode: Start with only savings available
   if (mode === 'solo') {
     setAvailableInvestments(['savings']);
@@ -2800,25 +2867,11 @@ const sellAsset = (assetId, units, category) => {
     const isMatured = fd.monthsElapsed >= fd.duration;
     
     if (!isMatured) {
-      // Early withdrawal - apply penalty
-      const penaltyRate = 0.5; // 0.5% penalty per remaining month
+      // Early withdrawal - apply penalty (no legacy confirm)
+      const penaltyRate = 0.5; // 0.5% per remaining month
       const remainingMonths = fd.duration - fd.monthsElapsed;
       const penalty = fd.amount * (penaltyRate / 100) * remainingMonths;
       const totalAmount = fd.amount + fd.profit - penalty;
-      
-      // Show confirmation for penalty
-      const confirmed = window.confirm(
-        `⚠️ Early Withdrawal Penalty\n` +
-        `FD Duration: ${fd.duration} months\n` +
-        `Elapsed: ${fd.monthsElapsed} months\n` +
-        `Remaining: ${remainingMonths} months\n` +
-        `Penalty: ${formatCurrency(penalty)}\n` +
-        `You will receive: ${formatCurrency(totalAmount)}\n\n` +
-        `Continue with early withdrawal?`
-      );
-      
-      if (!confirmed) return;
-      
       setPocketCash(prev => prev + totalAmount);
       setInvestments(prev => ({ ...prev, fixedDeposits: prev.fixedDeposits.filter((_, i) => i !== index) }));
     } else {
@@ -2887,8 +2940,22 @@ const StockCard = ({ stock }) => {
     const maxPrice = Math.max(...sparklineData);
     const priceRange = maxPrice - minPrice || 1;
 
+    const [showGif, setShowGif] = React.useState(false);
+    const gifShownRef = React.useRef(false);
+
+    React.useEffect(() => {
+      if (!gifShownRef.current && (profitLossPercent >= 20 || profitLoss >= 10000)) {
+        gifShownRef.current = true;
+        setShowGif(true);
+        setTimeout(() => setShowGif(false), 3000);
+      }
+    }, [profitLoss, profitLossPercent]);
+
     return (
-      <div className="bg-white p-4 rounded-lg border-2 border-blue-200">
+      <div className="relative bg-white p-4 rounded-lg border-2 border-blue-200 shadow-md hover:shadow-lg transition-shadow">
+        {showGif && (
+          <img src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        )}
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
             <div className="flex items-center gap-2">
@@ -3011,7 +3078,7 @@ const StockCard = ({ stock }) => {
       <div className="min-h-screen bg-gradient-to-br from-orange-500 via-white to-green-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full border-4 border-orange-600">
           <div className="text-center mb-8">
-            <div className="text-6xl mb-4">₹</div>
+            <img src="/Rupee_logo.png" alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
             <h1 className="text-4xl font-bold text-orange-600 mb-2">Build Your Dhan</h1>
             <p className="text-gray-600">Stock Trading Challenge</p>
           </div>
@@ -3314,82 +3381,155 @@ const StockCard = ({ stock }) => {
         )}
 
         {availableInvestments.includes('fixedDeposits') && (
-              <div className="bg-white p-6 rounded-lg shadow">
-                <h3 className="text-xl font-bold text-gray-800 mb-2">Fixed Deposits</h3>
-                <div className="mb-4">
-                  <div className="text-sm text-gray-600 mb-2">Active: {investments.fixedDeposits.length}/3</div>
-                  {investments.fixedDeposits.map((fd, idx) => {
-                    const isMatured = fd.monthsElapsed >= fd.duration;
-                    const remainingMonths = fd.duration - fd.monthsElapsed;
-                    return (
-                      <div key={idx} className={`mt-2 p-3 rounded text-sm border-2 ${isMatured ? 'bg-green-50 border-green-300' : 'bg-blue-50 border-blue-200'}`}>
-                        <div className="flex justify-between items-center mb-2">
-                          <span className="font-semibold">₹{fd.amount.toLocaleString()} ({fd.duration}M)</span>
-                          <span className="text-green-600 font-bold">+₹{Math.round(fd.profit).toLocaleString()}</span>
-                        </div>
-                        <div className="text-xs text-gray-600 mb-2">
-                          <div>Elapsed: {fd.monthsElapsed}/{fd.duration} months</div>
-                          {!isMatured && (
-                            <div className="text-orange-600 font-semibold mt-1">
-                              ⏳ Matures in {remainingMonths} months
-                            </div>
-                          )}
-                          {isMatured && (
-                            <div className="text-green-600 font-semibold mt-1">
-                              ✅ Matured
-                            </div>
-                          )}
-                        </div>
-                        <button 
-                          onClick={() => withdrawFD(idx)} 
-                          className={`w-full py-1.5 rounded text-xs font-semibold transition-colors ${
-                            isMatured 
-                              ? 'bg-green-600 hover:bg-green-700 text-white' 
-                              : 'bg-orange-600 hover:bg-orange-700 text-white'
-                          }`}
-                        >
-                          {isMatured ? 'Withdraw' : 'Early Withdraw (Penalty)'}
-                        </button>
+              <div className="bg-white p-6 rounded-2xl shadow-lg border border-blue-100">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-bold text-blue-700">Fixed Deposits</h3>
+                  <div className="text-xs text-gray-600">Active {investments.fixedDeposits.length}/3</div>
+                </div>
+
+                {/* Helper + quick reference rates */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="text-xs text-gray-600">Current FD rate.</div>
+                  <div className="flex gap-2">
+                    {['1Y','2Y','3Y','5Y'].map(k => (
+                      <div key={k} className="px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
+                        {k} Rate {getCurrentFDRate(k).toFixed(1)}%
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <button onClick={() => {
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
-                      setPocketCash(prev => prev - 10000);
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 12, roi: getCurrentFDRate('1Y'), monthsElapsed: 0, profit: 0 }] }));
-                    }
-                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-                    1Y FD ({getCurrentFDRate('1Y').toFixed(1)}%)
-                  </button>
-                  <button onClick={() => {
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
-                      setPocketCash(prev => prev - 10000);
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 24, roi: getCurrentFDRate('2Y'), monthsElapsed: 0, profit: 0 }] }));
-                    }
-                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-                    2Y FD ({getCurrentFDRate('2Y').toFixed(1)}%)
-                  </button>
-                  <button onClick={() => {
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
-                      setPocketCash(prev => prev - 10000);
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 36, roi: getCurrentFDRate('3Y'), monthsElapsed: 0, profit: 0 }] }));
-                    }
-                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-                    3Y FD ({getCurrentFDRate('3Y').toFixed(1)}%)
-                  </button>
-                  <button onClick={() => {
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
-                      setPocketCash(prev => prev - 10000);
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 60, roi: getCurrentFDRate('5Y'), monthsElapsed: 0, profit: 0 }] }));
-                    }
-                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-                    5Y FD ({getCurrentFDRate('5Y').toFixed(1)}%)
-                  </button>
+
+                {/* Active FDs (moved below controls so new ones appear at bottom) */}
+                {/* Placeholder; list moved below */}
+                {/* previously rendered here */}
+                
+                
+
+                {/* Active FDs now below controls */}
+
+                {/* Custom amount + quick chips + tenure buttons */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-gray-600 mb-1 block">Amount (₹)</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min={1000} step={1000} value={fdAmount}
+                        onChange={(e) => setFdAmount(Math.max(1000, parseInt(e.target.value || '0')))}
+                        className="w-40 px-3 py-2 border border-gray-300 rounded-lg" />
+                      <div className="flex gap-2">
+                        {[10000, 25000, 50000].map(v => (
+                          <button key={v} onClick={() => setFdAmount(v)} className={`px-2 py-1 rounded-md text-xs border ${fdAmount === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'}`}>₹{(v/1000)}k</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">Available: {formatCurrency(pocketCash)}</div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { m: 12, k: '1Y' },
+                      { m: 24, k: '2Y' },
+                      { m: 36, k: '3Y' },
+                      { m: 60, k: '5Y' }
+                    ].map(opt => (
+                      <button key={opt.m} onClick={() => {
+                        if (pocketCash >= fdAmount && investments.fixedDeposits.length < 3) {
+                          setPocketCash(prev => prev - fdAmount);
+                          setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: fdAmount, duration: opt.m, roi: getCurrentFDRate(opt.k), monthsElapsed: 0, profit: 0 }] }));
+                        }
+                      }} disabled={pocketCash < fdAmount || investments.fixedDeposits.length >= 3}
+                      className="px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white">
+                        {opt.k}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                {/* Active FDs list directly below controls within the same card */}
+                {investments.fixedDeposits.length > 0 && (
+                  <div className="space-y-3 mt-5">
+                    {investments.fixedDeposits.map((fd, idx) => {
+                      const isMatured = fd.monthsElapsed >= fd.duration;
+                      const remainingMonths = Math.max(0, fd.duration - fd.monthsElapsed);
+                      const progressPct = Math.min(100, Math.round((fd.monthsElapsed / fd.duration) * 100));
+                      const radius = 20;
+                      const circumference = 2 * Math.PI * radius;
+                      const dash = (progressPct / 100) * circumference;
+                      return (
+                        <div key={idx} className="p-3 rounded-xl border border-blue-200 bg-white shadow-md">
+                          <div className="flex items-center gap-3">
+                            <svg width="52" height="52" viewBox="0 0 52 52" className="shrink-0">
+                              <circle cx="26" cy="26" r={radius} fill="none" stroke="#e0e7ff" strokeWidth="6" />
+                              <circle cx="26" cy="26" r={radius} fill="none" stroke="#3b82f6" strokeWidth="6" strokeLinecap="round" strokeDasharray={`${dash} ${circumference - dash}`} transform="rotate(-90 26 26)" />
+                              <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fontSize="10" fill="#1f2937">{progressPct}%</text>
+                            </svg>
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between">
+                                <div className="font-bold text-gray-800">₹{fd.amount.toLocaleString()}</div>
+                                <div className="text-sm font-semibold text-green-600">₹{Math.round(fd.profit).toLocaleString()}</div>
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1 flex justify-between">
+                                <span>{fd.monthsElapsed}/{fd.duration}m</span>
+                                <span className={isMatured ? 'text-green-600 font-semibold' : 'text-orange-600 font-semibold'}>
+                                  {isMatured ? 'Matured' : `${remainingMonths} Months left`}
+                                </span>
+                              </div>
+                              <div className="mt-2 flex gap-2">
+                                <button onClick={() => (isMatured ? withdrawFD(idx) : setFdConfirm({ index: idx, isMatured }))} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${isMatured ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}>
+                                  {isMatured ? 'Withdraw' : 'Early Withdraw'}
+                                </button>
+                                <span className="px-2 py-1 rounded-md text-[10px] bg-blue-50 text-blue-700 border border-blue-200">ROI {fd.roi?.toFixed ? fd.roi.toFixed(1) : fd.roi}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
               </div>
             )}
+
+            {/* FD confirmation modal (non-expanding) */}
+
+            
+            
+            
+            {fdConfirm && (() => {
+              const fd = investments.fixedDeposits[fdConfirm.index];
+              const isMatured = fdConfirm.isMatured;
+              const remaining = Math.max(0, (fd?.duration || 0) - (fd?.monthsElapsed || 0));
+              const penaltyRate = 0.5; // % per remaining month
+              const penalty = !isMatured && fd ? fd.amount * (penaltyRate / 100) * remaining : 0;
+              const willReceive = fd ? fd.amount + fd.profit - penalty : 0;
+              return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center">
+                <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setFdConfirm(null)} />
+                <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 w-[90%] max-w-sm p-5">
+                  <div className="text-center mb-3">
+                    <h4 className="text-lg font-bold text-gray-800 mb-1">{fdConfirm.isMatured ? 'Withdraw FD' : 'Early Withdrawal'}</h4>
+                    <div className="text-xs text-gray-600 space-y-1">
+                      {isMatured ? (
+                        <>
+                          <div>Principal + interest will be credited.</div>
+                          <div className="font-semibold text-gray-800">Payout: {formatCurrency(willReceive)}</div>
+                        </>
+                      ) : (
+                        <>
+                          <div>Penalty {penaltyRate}% × {remaining}m = {formatCurrency(penalty)}</div>
+                          <div className="font-semibold text-gray-800">You receive: {formatCurrency(willReceive)}</div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setFdConfirm(null)} className="w-1/2 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 font-semibold text-sm">Cancel</button>
+                    <button onClick={() => { withdrawFD(fdConfirm.index); setFdConfirm(null); }} className={`w-1/2 py-2 rounded-lg text-white font-semibold text-sm ${fdConfirm.isMatured ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-600 hover:bg-orange-700'}`}>{fdConfirm.isMatured ? 'Withdraw' : 'Confirm'}</button>
+                  </div>
+                </div>
+              </div>
+              );
+            })()}
 
             {availableInvestments.includes('gold') && (
               <div className="bg-white p-6 rounded-lg shadow">
@@ -3526,9 +3666,8 @@ const StockCard = ({ stock }) => {
               </div>
             </div>
           )}
-
-
-        </div>
+        
+      </div>
       </div>
     );
   }
@@ -3544,7 +3683,11 @@ const StockCard = ({ stock }) => {
             <h2 className="text-4xl font-bold text-gray-800 mb-2">Game Complete!</h2>
           </div>
           <div className="bg-gradient-to-r from-orange-500 to-green-500 text-white p-8 rounded-xl mb-6">
-            <div className="text-center"><div className="text-lg mb-2">Final Net Worth</div><div className="text-5xl font-bold">{formatCurrency(finalNetWorth)}</div><div className="text-xl mt-2">+{growth}%</div></div>
+            <div className="text-center">
+              <div className="text-lg mb-2">Final Net Worth</div>
+              <div className="text-5xl font-bold">{formatCurrency(finalNetWorth)}</div>
+              <div className="text-xl mt-2">+{growth}%</div>
+            </div>
           </div>
           {mode === 'multiplayer' && multiplayer.leaderboard.length > 0 && (
             <div className="mb-6">

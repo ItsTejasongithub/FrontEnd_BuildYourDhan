@@ -1,3 +1,32 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin: 0;
+}
+
+/* Slightly scale down the entire app on shorter screens to avoid scroll */
+.app-scale {
+  display: block;
+  height: 100svh; /* modern viewport unit */
+  min-height: 100vh; /* fallback */
+  width: 100vw;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-height: 900px) {
+  .app-scale { }
+}
+
+@media (max-height: 780px) {
+  .app-scale { }
+}
