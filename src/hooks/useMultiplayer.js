@@ -27,6 +27,7 @@ export const useMultiplayer = () => {
   const [availableCrypto, setAvailableCrypto] = useState([]);
   const [availableForex, setAvailableForex] = useState([]);
   const [gameStartYear, setGameStartYear] = useState(null);
+  const [gameEndYear, setGameEndYear] = useState(null);
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
@@ -76,6 +77,9 @@ export const useMultiplayer = () => {
         setAvailableStocks(data.room.gameData.stocks);
         console.log('📈 Stocks loaded:', data.room.gameData.stocks.length);
       }
+      if (data.room.gameEndYear !== undefined) {
+        setGameEndYear(data.room.gameEndYear);
+      }
       if (data.room.gameData?.mutualFunds) {
         setAvailableMutualFunds(data.room.gameData.mutualFunds);
       }
@@ -93,6 +97,9 @@ export const useMultiplayer = () => {
       if (data.room.gameStartYear !== undefined) {
         setGameStartYear(data.room.gameStartYear);
         console.log('📅 Game start year set:', data.room.gameStartYear);
+      }
+      if (data.room.gameEndYear !== undefined) {
+        setGameEndYear(data.room.gameEndYear);
       }
 
       // Load all asset types from server
@@ -169,6 +176,9 @@ export const useMultiplayer = () => {
         setGameStartYear(data.gameStartYear);
         console.log('📅 Game start year:', data.gameStartYear);
       }
+      if (data.gameEndYear !== undefined) {
+        setGameEndYear(data.gameEndYear);
+      }
 
       if (data.availableInvestments) {
         console.log('💼 Investments on start:', data.availableInvestments);
@@ -214,6 +224,9 @@ export const useMultiplayer = () => {
       
       if (data.gameStartYear !== undefined) {
         setGameStartYear(data.gameStartYear);
+      }
+      if (data.gameEndYear !== undefined) {
+        setGameEndYear(data.gameEndYear);
       }
       
       if (data.availableInvestments) {
@@ -350,6 +363,7 @@ export const useMultiplayer = () => {
     availableCrypto,
     availableForex,
     gameStartYear,
+    gameEndYear,
     buyMutualFund,
     sellMutualFund,
     error,

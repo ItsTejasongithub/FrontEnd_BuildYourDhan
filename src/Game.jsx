@@ -31,17 +31,61 @@ import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 import { Calendar, Trophy, IndianRupee, Play, TrendingUp, TrendingDown, X, ArrowLeft, Users, Copy, Check, Clock, AlertCircle, BarChart3 } from 'lucide-react';
 import { useMultiplayer } from './hooks/useMultiplayer';
+import { loadFDRates } from './utils/assetLoader';
 
 const MONTH_DURATION = parseInt(import.meta.env.VITE_SOLO_MONTH_DURATION || '5000');
 console.log('SOLO_MONTH_DURATION (raw):', import.meta.env.VITE_SOLO_MONTH_DURATION);
 console.log('SOLO_MONTH_DURATION (parsed):', MONTH_DURATION);
 console.log('URL:', import.meta.env.VITE_SOCKET_URL);
 
+// Inject a small shake animation for insufficient cash feedback
+let __shakeStylesInjected = false;
+const ensureShakeStylesInjected = () => {
+  if (__shakeStylesInjected) return;
+  const style = document.createElement('style');
+  style.innerHTML = `@keyframes gv3-shake { 0%{transform:translateX(0)} 20%{transform:translateX(-4px)} 40%{transform:translateX(4px)} 60%{transform:translateX(-3px)} 80%{transform:translateX(3px)} 100%{transform:translateX(0)} } .gv3-shake { animation: gv3-shake 0.35s ease; }`;
+  document.head.appendChild(style);
+  __shakeStylesInjected = true;
+};
+
+// Lazy-load filename mapping so renamed CSVs can be resolved transparently
+let __assetFilenameMapCache = null;
+const loadAssetFilenameMap = async () => {
+  if (__assetFilenameMapCache) return __assetFilenameMapCache;
+  try {
+    const resp = await fetch('/data/asset_filename_mapping.json');
+    if (resp.ok) {
+      __assetFilenameMapCache = await resp.json();
+      console.log('🔗 asset_filename_mapping.json loaded');
+      return __assetFilenameMapCache;
+    }
+  } catch (_) {}
+  __assetFilenameMapCache = {};
+  return __assetFilenameMapCache;
+};
+
+const resolveMappedFilename = async (folder, filename) => {
+  const map = await loadAssetFilenameMap();
+  if (!map || typeof map !== 'object') return filename;
+  // Support both flat and per-category mappings
+  if (map[filename]) return map[filename];
+  if (map[folder] && map[folder][filename]) return map[folder][filename];
+  // Also try id without .csv
+  const base = filename.endsWith('.csv') ? filename.slice(0, -4) : filename;
+  if (map[base]) return map[base];
+  if (map[folder] && map[folder][base]) return map[folder][base];
+  return filename;
+};
+
 const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
   try {
-    const response = await fetch(`/data/${folder}/${filename}`);
+    const mapped = await resolveMappedFilename(folder, filename);
+    if (mapped !== filename) {
+      console.log(`↪️ Mapping ${filename} -> ${mapped}`);
+    }
+    const response = await fetch(`/data/${folder}/${mapped}`);
     if (!response.ok) {
-      console.error(`Failed to fetch ${folder}/${filename}: HTTP ${response.status}`);
+      console.error(`Failed to fetch ${folder}/${mapped}: HTTP ${response.status}`);
       return null;
     }
     
@@ -115,7 +159,7 @@ const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
       }
     }
     
-    console.log(`✅ Loaded ${filename}: ${prices.length} years (${startYear}-${endYear}), ${validRows} rows`);
+    console.log(`✅ Loaded ${mapped}: ${prices.length} years (${startYear}-${endYear}), ${validRows} rows`);
     
     return {
       prices,      // Dense array [price_0, price_1, ...]
@@ -287,14 +331,16 @@ const loadAllStocksFromTimeline = async (timeline, gameStartYear) => {
   };
 
   const stockList = [];
-  const yearsNeeded = 20;
+
+  // NEW APPROACH: Load ALL stocks that have ANY data overlap with game period
+  // We'll filter by year during unlock, not during loading
+  const gameEndYear = 2025; // Always end at 2025
 
   for (const [stockId, info] of Object.entries(timeline.Indian_Stocks)) {
-    // Check if stock has enough data for the game
-    const available = info.firstYear <= gameStartYear &&
-                     info.lastYear >= gameStartYear + yearsNeeded;
+    // Check if stock has ANY data overlap with our game period
+    const hasDataDuringGame = info.lastYear >= gameStartYear && info.firstYear <= gameEndYear;
 
-    if (available) {
+    if (hasDataDuringGame) {
       // Extract stock name from ID (remove .csv if present)
       const cleanId = stockId.replace('.csv', '');
       const stockInfo = STOCK_INFO[cleanId] || { name: cleanId, sector: 'Other' };
@@ -303,12 +349,14 @@ const loadAllStocksFromTimeline = async (timeline, gameStartYear) => {
         id: cleanId,
         name: stockInfo.name,
         csvFile: `${cleanId}.csv`,
-        sector: stockInfo.sector
+        sector: stockInfo.sector,
+        availableFrom: info.firstYear,
+        availableUntil: info.lastYear
       });
     }
   }
 
-  console.log(`  📊 Found ${stockList.length} stocks in timeline with sufficient data`);
+  console.log(`  📊 Found ${stockList.length} stocks with data overlap (${gameStartYear}-${gameEndYear})`);
   return stockList;
 };
 
@@ -334,28 +382,7 @@ const filterAssetsByTimeline = (assets, category, gameStartYear, timeline, years
   });
 };
 
-const loadFDRatesFromCSV = async () => {
-  try {
-    const response = await fetch('/data/Fixed_Deposits/fd_rates.csv');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const text = await response.text();
-    const lines = text.trim().split('\n');
-    
-    const rates = { '3M': [], '1Y': [], '3Y': [] };
-    
-    for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(',');
-      if (parts.length >= 4) {
-        rates['3M'].push(parseFloat(parts[1]));
-        rates['1Y'].push(parseFloat(parts[2]));
-        rates['3Y'].push(parseFloat(parts[3]));
-      }
-    }
-    return rates;
-  } catch (error) {
-    return { '3M': [4.5], '1Y': [6.5], '3Y': [7.5] }; // fallback
-  }
-};
+// FD Rates loader moved to assetLoader.js - import { loadFDRates } from './utils/assetLoader'
 
 // Asset Categories Configuration
 const ASSET_CATEGORIES = {
@@ -465,136 +492,354 @@ const EVENT_POOL = {
     { message: 'Tax refund received', amount: 20000 },
     { message: 'Sold old items online', amount: 15000 },
     { message: 'Investment dividend received', amount: 30000 }
-  ],
-  unlocks: [
-  { message: 'Savings Account available', unlock: 'savings', year: 0 },
-  { message: 'Fixed Deposits now available', unlock: 'fixedDeposits', year: 1 },
-  { message: 'Gold investment unlocked', unlock: 'gold', year: 2 },
-  { message: 'Stock market access unlocked', unlock: 'stocks', year: 3 },
-  // Year 6: Random asset from [mutualFunds, indexFunds, commodities, reit, crypto, forex]
-  { message: 'New investment option unlocked!', unlock: 'random1', year: 5 },
-  { message: 'Another investment unlocked!', unlock: 'random2', year: 6 },
-  { message: 'Final investment unlocked!', unlock: 'random3', year: 7 }
-]
+  ]
+  // NOTE: Unlocks are now timeline-based in generateTimelineBasedEvents()
+  // Old fixed-year unlocks removed - assets unlock when data becomes available
 };
 
-// Generate random events (called once at game start)
-const generateRandomEvents = (randomAssets) => {
+/**
+ * NEW TIMELINE-BASED EVENT GENERATION
+ * Assets unlock when game year reaches their availability in Asset_Timeline.csv
+ *
+ * Fixed unlocks:
+ * - Year 0: Savings Account
+ * - Year 1: Fixed Deposits
+ *
+ * Timeline-based unlocks (when data becomes available):
+ * - Stocks, Gold, MF/Index, Commodities, Crypto, REIT
+ *
+ * Special cases:
+ * - REIT: Embassy unlocks at 2019, Mindspace at 2020
+ * - Crypto: BTC + ETH unlock together when both available
+ */
+const generateTimelineBasedEvents = (gameAssets, gameStartYear, gameEndYear = 2025) => {
   const events = {};
   const usedLossEvents = new Set();
   const usedGainEvents = new Set();
-  
+
+  console.log('\n🗓️ Generating Timeline-Based Events...');
+  console.log(`   Game Period: ${gameStartYear} to ${gameEndYear} (${gameEndYear - gameStartYear} years)`);
+
+  // Year 0: Savings (always)
   events[0] = { type: 'unlock', message: 'Savings Account ready', unlock: 'savings' };
+
+  // Year 1: Fixed Deposits (always)
   events[1] = { type: 'unlock', message: 'Fixed Deposits now available', unlock: 'fixedDeposits' };
-  events[2] = { type: 'unlock', message: 'Gold investment unlocked', unlock: 'gold' };
-  events[3] = { type: 'unlock', message: 'Stock market access unlocked', unlock: 'stocks' };
-  
-  // Random unlocks at years 5, 6, 7 (support 1-3 categories)
-  if (randomAssets && randomAssets.length > 0) {
-    const maxUnlocks = Math.min(3, randomAssets.length);
-    for (let i = 0; i < maxUnlocks; i++) {
-      const key = randomAssets[i];
-      events[5 + i] = { type: 'unlock', message: `${key} now available`, unlock: key };
+
+  // NEW APPROACH: Collect all categories with their earliest unlock years
+  const categoryUnlocks = [];
+
+  if (gameAssets.stocks && gameAssets.stocks.length > 0) {
+    const overlapStocks = gameAssets.stocks.filter(s => s.endYear >= gameStartYear && s.startYear <= gameEndYear);
+    if (overlapStocks.length > 0) {
+      const earliestYear = Math.min(...overlapStocks.map(s => s.startYear));
+      categoryUnlocks.push({ category: 'stocks', name: 'Stock Market', unlockYear: earliestYear, message: 'Stock market access unlocked' });
     }
   }
-  
-  // Generate random loss/gain events
+
+  if (gameAssets.gold && gameAssets.gold.startYear) {
+    if (gameAssets.gold.endYear >= gameStartYear && gameAssets.gold.startYear <= gameEndYear) {
+      categoryUnlocks.push({ category: 'gold', name: 'Gold', unlockYear: gameAssets.gold.startYear, message: 'Gold investment unlocked' });
+    }
+  }
+
+  if (gameAssets.mutualFunds && gameAssets.mutualFunds.length > 0) {
+    const overlapMF = gameAssets.mutualFunds.filter(m => m.endYear >= gameStartYear && m.startYear <= gameEndYear);
+    if (overlapMF.length > 0) {
+      const earliestYear = Math.min(...overlapMF.map(m => m.startYear));
+      categoryUnlocks.push({ category: 'mutualFunds', name: 'Mutual Funds', unlockYear: earliestYear, message: 'Mutual Funds now available' });
+    }
+  }
+
+  if (gameAssets.indexFunds && gameAssets.indexFunds.length > 0) {
+    const overlapIndex = gameAssets.indexFunds.filter(i => i.endYear >= gameStartYear && i.startYear <= gameEndYear);
+    if (overlapIndex.length > 0) {
+      const earliestYear = Math.min(...overlapIndex.map(i => i.startYear));
+      categoryUnlocks.push({ category: 'indexFunds', name: 'Index Funds', unlockYear: earliestYear, message: 'Index Funds now available' });
+    }
+  }
+
+  if (gameAssets.commodities && gameAssets.commodities.length > 0) {
+    const overlapCom = gameAssets.commodities.filter(c => c.endYear >= gameStartYear && c.startYear <= gameEndYear);
+    if (overlapCom.length > 0) {
+      const earliestYear = Math.min(...overlapCom.map(c => c.startYear));
+      categoryUnlocks.push({ category: 'commodities', name: 'Commodities', unlockYear: earliestYear, message: 'Commodity trading unlocked' });
+    }
+  }
+
+  if (gameAssets.crypto && gameAssets.crypto.length > 0) {
+    const btcAsset = gameAssets.crypto.find(c => c.id === 'BTC');
+    if (btcAsset && btcAsset.startYear && btcAsset.endYear >= gameStartYear && btcAsset.startYear <= gameEndYear) {
+      categoryUnlocks.push({ category: 'crypto', name: 'Cryptocurrency', unlockYear: btcAsset.startYear, message: 'Cryptocurrency trading unlocked (Bitcoin)', subkey: 'BTC' });
+    }
+    const ethAsset = gameAssets.crypto.find(c => c.id === 'ETH');
+    if (ethAsset && ethAsset.startYear && ethAsset.endYear >= gameStartYear && ethAsset.startYear <= gameEndYear) {
+      categoryUnlocks.push({ category: 'crypto', name: 'Cryptocurrency', unlockYear: ethAsset.startYear, message: 'New cryptocurrency available (Ethereum)', subkey: 'ETH' });
+    }
+  }
+
+  if (gameAssets.reit && gameAssets.reit.length > 0) {
+    const embassyAsset = gameAssets.reit.find(r => r.id === 'EMBASSY');
+    if (embassyAsset && embassyAsset.startYear && embassyAsset.endYear >= gameStartYear && embassyAsset.startYear <= gameEndYear) {
+      categoryUnlocks.push({ category: 'reit', name: 'REIT', unlockYear: embassyAsset.startYear, message: 'REIT investment unlocked (Embassy)', subkey: 'EMBASSY' });
+    }
+    const mindspaceAsset = gameAssets.reit.find(r => r.id === 'MINDSPACE');
+    if (mindspaceAsset && mindspaceAsset.startYear && mindspaceAsset.endYear >= gameStartYear && mindspaceAsset.startYear <= gameEndYear) {
+      categoryUnlocks.push({ category: 'reit', name: 'REIT', unlockYear: mindspaceAsset.startYear, message: 'New REIT available (Mindspace)', subkey: 'MINDSPACE' });
+    }
+  }
+
+  if (gameAssets.forex && gameAssets.forex.length > 0) {
+    const overlapFX = gameAssets.forex.filter(f => f.endYear >= gameStartYear && f.startYear <= gameEndYear);
+    if (overlapFX.length > 0) {
+      const earliestYear = Math.min(...overlapFX.map(f => f.startYear));
+      categoryUnlocks.push({ category: 'forex', name: 'Forex', unlockYear: earliestYear, message: 'Forex trading unlocked' });
+    }
+  }
+
+  // Sort categories by their earliest unlock year
+  categoryUnlocks.sort((a, b) => a.unlockYear - b.unlockYear);
+
+  console.log('\n📅 Categories by unlock year:');
+  categoryUnlocks.forEach(cat => console.log(`   ${cat.name}: ${cat.unlockYear}`));
+
+  // NEW STRATEGY: Unlock assets based on ACTUAL DATA AVAILABILITY
+  // Calculate year offset from game start for each category
+  const unlockSchedule = [];
+
+  for (const categoryInfo of categoryUnlocks) {
+    // Calculate which game year this category should unlock
+    let yearOffset = categoryInfo.unlockYear - gameStartYear;
+    if (yearOffset < 0) yearOffset = 0; // unlock immediately if already available
+
+    // Only unlock if within game duration
+    if (gameStartYear + yearOffset <= gameEndYear) {
+      unlockSchedule.push({
+        year: yearOffset,
+        key: categoryInfo.category,
+        name: categoryInfo.name,
+        message: categoryInfo.message,
+        subkey: categoryInfo.subkey,
+        dataStartYear: categoryInfo.unlockYear
+      });
+      console.log(`   ${categoryInfo.name}: data from ${categoryInfo.unlockYear}, unlock at Year ${yearOffset} (${gameStartYear + yearOffset})`);
+    } else {
+      console.log(`   ⏭️ Skipping ${categoryInfo.name}: data starts ${categoryInfo.unlockYear}, outside game period`);
+    }
+  }
+
+  console.log('\n📅 Unlock Schedule:');
+  unlockSchedule.forEach(u => {
+    const absoluteYear = gameStartYear + u.year;
+    console.log(`   Year ${u.year} (${absoluteYear}): ${u.name}`);
+
+    // Add to events (skip if year is 0 or 1, already used for savings/FD)
+    if (u.year >= 0 && u.year < 20) {
+      if (!events[u.year]) {
+        events[u.year] = { type: 'unlock', message: u.message, unlock: u.key, subkey: u.subkey };
+      } else {
+        // If year already has an unlock, add to next available year
+        let nextYear = u.year + 1;
+        while (events[nextYear] && nextYear < 20) nextYear++;
+        if (nextYear < 20) {
+          events[nextYear] = { type: 'unlock', message: u.message, unlock: u.key, subkey: u.subkey };
+        }
+      }
+    }
+  });
+
+  // Generate random loss/gain events in remaining years
   let nextEventMonth = Math.floor(Math.random() * 12) + 24; // First event between month 24-36
-  
+
   while (nextEventMonth < 240) {
     const eventYear = Math.floor(nextEventMonth / 12);
-    
+
     // Skip if year already has an unlock event
     if (!events[eventYear]) {
       // 60% chance of loss, 40% chance of gain
       const isLoss = Math.random() < 0.6;
-      
+
       if (isLoss) {
-        // Pick random loss event that hasn't been used
         let eventIndex;
         let attempts = 0;
         do {
           eventIndex = Math.floor(Math.random() * EVENT_POOL.losses.length);
           attempts++;
         } while (usedLossEvents.has(eventIndex) && attempts < 20);
-        
+
         usedLossEvents.add(eventIndex);
         const lossEvent = EVENT_POOL.losses[eventIndex];
         events[eventYear] = { type: 'loss', message: lossEvent.message, amount: lossEvent.amount };
       } else {
-        // Pick random gain event that hasn't been used
         let eventIndex;
         let attempts = 0;
         do {
           eventIndex = Math.floor(Math.random() * EVENT_POOL.gains.length);
           attempts++;
         } while (usedGainEvents.has(eventIndex) && attempts < 20);
-        
+
         usedGainEvents.add(eventIndex);
         const gainEvent = EVENT_POOL.gains[eventIndex];
         events[eventYear] = { type: 'gain', message: gainEvent.message, amount: gainEvent.amount };
       }
     }
-    
+
     // Next event in 24-36 months
     nextEventMonth += Math.floor(Math.random() * 13) + 24;
   }
-  
+
+  console.log(`✅ Generated ${Object.keys(events).length} total events\n`);
+
   return events;
 };
 
 
+/**
+ * NEW DYNAMIC ASSET SELECTION SYSTEM (V2)
+ * Total 9 categories: Savings (always Year 0), FD (always Year 1), + 7 others
+ * Optional categories: Stocks, MF/Index (exclusive), Gold, Commodities, Crypto, REIT, Forex
+ * Randomly select 5 from 7 remaining categories (total 7 unlockable per game)
+ *
+ * This function now works WITHOUT a game year - we select categories first!
+ */
 const selectRandomAssets = async (gameStartYear, timeline) => {
-  if (!timeline) {
-    console.error('❌ Timeline not provided to selectRandomAssets');
-    return [];
-  }
-  
-  const YEARS_NEEDED = 20;
-  const availableCategories = [];
-  
-  // Define all unlockable categories
-  const categoryDefinitions = [
-    { key: 'mutualFunds', name: 'Mutual Funds', assets: MUTUAL_FUNDS, folder: 'Mutual_Funds' },
-    { key: 'indexFunds', name: 'Index Funds', assets: INDEX_FUNDS, folder: 'Index_Funds' },
-    { key: 'commodities', name: 'Commodities', assets: COMMODITIES, folder: 'Commodities' },
-    { key: 'reit', name: 'REITs', assets: REIT_ASSETS, folder: 'REIT' },
-    { key: 'crypto', name: 'Cryptocurrency', assets: CRYPTO_ASSETS, folder: 'Crypto_Assets' },
-    { key: 'forex', name: 'Foreign Exchange', assets: FOREX_ASSETS, folder: 'Forex' }
+  console.log('\n🎲 ============================================');
+  console.log('   DYNAMIC ASSET SELECTION (No Year Yet)');
+  console.log('============================================');
+
+  // Step 1: Decide MF OR Index Fund (exclusive choice)
+  const useMutualFunds = Math.random() < 0.5;
+  console.log(`\n📊 MF/Index Decision: ${useMutualFunds ? 'Mutual Funds (3)' : 'Index Funds (2)'}`);
+
+  // Step 2: Define all 7 optional categories (Savings & FD always included)
+  const allCategories = [
+    { key: 'stocks', name: 'Stocks', include: true },
+    { key: 'mutualFunds', name: 'Mutual Funds', include: useMutualFunds },
+    { key: 'indexFunds', name: 'Index Funds', include: !useMutualFunds },
+    { key: 'gold', name: 'Gold', include: true },
+    { key: 'commodities', name: 'Commodities', include: true },
+    { key: 'crypto', name: 'Crypto', include: true },
+    { key: 'reit', name: 'REIT', include: true },
+    { key: 'forex', name: 'Forex', include: true }
   ];
-  
-  // Check each category for availability
-  for (const cat of categoryDefinitions) {
-    const filtered = filterAssetsByTimeline(
-      cat.assets, 
-      cat.folder, 
-      gameStartYear, 
-      timeline, 
-      YEARS_NEEDED
-    );
-    
-    if (filtered.length > 0) {
-      availableCategories.push({
-        key: cat.key,
-        name: cat.name,
-        folder: cat.folder,
-        availableAssets: filtered.length
-      });
+
+  // Filter to only included categories
+  const includedCategories = allCategories.filter(cat => cat.include);
+
+  // Step 3: Randomly exclude 2 categories (to get 5 out of 7)
+  const shuffled = includedCategories.sort(() => Math.random() - 0.5);
+  const selectedCategories = shuffled.slice(0, 5);
+
+  console.log('\n✅ Selected Categories (Total 7 with Savings + FD):');
+  console.log('   - Savings Account (Always Year 0)');
+  console.log('   - Fixed Deposits (Always Year 1)');
+  selectedCategories.forEach(cat => console.log(`   - ${cat.name}`));
+
+  const excluded = shuffled.slice(5);
+  if (excluded.length > 0) {
+    console.log(`\n❌ Excluded this session: ${excluded.map(c => c.name).join(', ')}`);
+  }
+
+  console.log('============================================\n');
+
+  return selectedCategories;
+};
+
+/**
+ * Find the latest introduction year among selected asset categories
+ */
+const findLatestIntroductionYear = async (selectedCategories, timeline) => {
+  console.log('\n📅 Finding latest introduction year...');
+
+  let latestYear = 1990; // Default minimum
+
+  for (const category of selectedCategories) {
+    let categoryEarliestYear = 1990; // Find when this category FIRST becomes available
+
+    switch (category.key) {
+      case 'stocks':
+        if (timeline.Indian_Stocks) {
+          const stockYears = Object.values(timeline.Indian_Stocks).map(s => s.firstYear);
+          const validYears = stockYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            categoryEarliestYear = Math.min(...validYears); // Find EARLIEST available
+          }
+        }
+        break;
+
+      case 'mutualFunds':
+        if (timeline.Mutual_Funds) {
+          const mfYears = Object.values(timeline.Mutual_Funds).map(m => m.firstYear);
+          const validYears = mfYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            categoryEarliestYear = Math.min(...validYears);
+          }
+        }
+        break;
+
+      case 'indexFunds':
+        if (timeline.Index_Funds) {
+          const indexYears = Object.values(timeline.Index_Funds).map(i => i.firstYear);
+          const validYears = indexYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            categoryEarliestYear = Math.min(...validYears);
+          }
+        }
+        break;
+
+      case 'commodities':
+        if (timeline.Commodities) {
+          const commodityYears = Object.values(timeline.Commodities).map(c => c.firstYear);
+          const validYears = commodityYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            categoryEarliestYear = Math.min(...validYears);
+          }
+        }
+        break;
+
+      case 'crypto':
+        if (timeline.Crypto_Assets) {
+          const cryptoYears = Object.values(timeline.Crypto_Assets).map(c => c.firstYear);
+          const validYears = cryptoYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            // Progressive within category: use latest of BTC/ETH starts to ensure both fit
+            categoryEarliestYear = Math.max(...validYears);
+          }
+        }
+        break;
+
+      case 'reit':
+        if (timeline.REIT) {
+          const reitYears = Object.values(timeline.REIT).map(r => r.firstYear);
+          const validYears = reitYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            // Progressive within category: Embassy then Mindspace -> use latest start
+            categoryEarliestYear = Math.max(...validYears);
+          }
+        }
+        break;
+
+      case 'gold':
+        if (timeline.Gold_Investments) {
+          const goldYears = Object.values(timeline.Gold_Investments).map(g => g.firstYear);
+          const validYears = goldYears.filter(y => y >= 1990 && y <= 2025);
+          if (validYears.length > 0) {
+            categoryEarliestYear = Math.min(...validYears);
+          }
+        }
+        break;
+    }
+
+    console.log(`   ${category.name}: earliest available ${categoryEarliestYear}`);
+
+    // Find which category has the LATEST earliest-year (last to become available)
+    if (categoryEarliestYear > latestYear) {
+      latestYear = categoryEarliestYear;
     }
   }
-  
-  if (availableCategories.length === 0) {
-    console.error('❌ No asset categories available for this start year!');
-    return [];
-  }
-  
-  // Shuffle and select up to 3
-  const shuffled = availableCategories.sort(() => Math.random() - 0.5);
-  const selected = shuffled.slice(0, Math.min(3, shuffled.length));
-  
-  console.log('🎲 Random assets selected:', selected.map(s => `${s.name} (${s.availableAssets})`).join(', '));
-  
-  return selected;
+
+  console.log(`\n   Latest introduction year: ${latestYear}`);
+  return latestYear;
 };
 
 
@@ -602,7 +847,247 @@ const selectRandomAssets = async (gameStartYear, timeline) => {
 
 
 
-// Initialize game with Asset Timeline filtering
+/**
+ * Find the latest data end year among selected asset categories
+ * Uses Asset_Timeline.csv lastYear field
+ */
+const findLatestAssetEndYear = async (selectedCategories, timeline) => {
+  console.log('\n📅 Finding latest data end year...');
+
+  let latestEndYear = 1990; // Default minimum
+
+  for (const category of selectedCategories) {
+    let categoryLatestEnd = 1990;
+
+    switch (category.key) {
+      case 'stocks':
+        if (timeline.Indian_Stocks) {
+          const years = Object.values(timeline.Indian_Stocks).map(s => s.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'mutualFunds':
+        if (timeline.Mutual_Funds) {
+          const years = Object.values(timeline.Mutual_Funds).map(m => m.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'indexFunds':
+        if (timeline.Index_Funds) {
+          const years = Object.values(timeline.Index_Funds).map(i => i.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'commodities':
+        if (timeline.Commodities) {
+          const years = Object.values(timeline.Commodities).map(c => c.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'crypto':
+        if (timeline.Crypto_Assets) {
+          const years = Object.values(timeline.Crypto_Assets).map(c => c.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'reit':
+        if (timeline.REIT) {
+          const years = Object.values(timeline.REIT).map(r => r.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'gold':
+        if (timeline.Gold_Investments) {
+          const years = Object.values(timeline.Gold_Investments).map(g => g.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+
+      case 'forex':
+        if (timeline.Forex) {
+          const years = Object.values(timeline.Forex).map(f => f.lastYear);
+          const valid = years.filter(y => y >= 1990 && y <= 2025);
+          if (valid.length > 0) categoryLatestEnd = Math.max(...valid);
+        }
+        break;
+    }
+
+    if (categoryLatestEnd > latestEndYear) {
+      latestEndYear = categoryLatestEnd;
+    }
+  }
+
+  console.log(`\n   Latest data end year: ${latestEndYear}`);
+  return latestEndYear;
+};
+
+
+// NEW V2: Initialize game assets (loads ALL assets from selected categories, no year filtering)
+const initializeGameAssetsV2 = async (gameStartYear, gameEndYear, selectedCategories, timeline) => {
+  console.log(`\n🎮 ============================================`);
+  console.log(`   Initializing Game Assets (V2)`);
+  console.log(`============================================`);
+  console.log(`   Start Year: ${gameStartYear}`);
+  console.log(`   End Year: ${gameEndYear}`);
+
+  try {
+    // Step 1: Load FD Rates
+    console.log('\n💰 Loading FD Rates...');
+    const fdRates = await loadFDRates();
+
+    // Step 2: Load ALL assets from selected categories (NO year filtering yet)
+    console.log('\n📦 Loading Selected Asset Categories...');
+    const gameAssets = {};
+
+    for (const category of selectedCategories) {
+      console.log(`\n  📦 Loading ${category.name}...`);
+
+      switch (category.key) {
+        case 'stocks':
+          // Load ALL available stocks
+          const allStocks = await loadAllStocksFromTimeline(timeline, 1990); // Load from earliest year
+          const stockCount = Math.floor(Math.random() * 3) + 2; // 2-4 stocks
+          const selectedStocks = allStocks.sort(() => Math.random() - 0.5).slice(0, stockCount);
+
+          const loadedStocks = [];
+          for (const stockMeta of selectedStocks) {
+            const data = await loadStockDataFromCSV(stockMeta.csvFile, 'Indian_Stocks');
+            if (data && data.prices) {
+              loadedStocks.push({ ...stockMeta, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.stocks = loadedStocks;
+          console.log(`    ✅ Loaded ${loadedStocks.length} stocks`);
+          break;
+
+        case 'gold':
+          const goldAssets = GOLD_ASSETS;
+          if (goldAssets.length > 0) {
+            const goldData = await loadStockDataFromCSV(goldAssets[0].csvFile, 'Gold_Investments');
+            if (goldData && goldData.prices) {
+              gameAssets.gold = { ...goldAssets[0], prices: goldData.prices, startYear: goldData.startYear, endYear: goldData.endYear };
+              console.log(`    ✅ Gold loaded`);
+            }
+          }
+          break;
+
+        case 'mutualFunds':
+          const allMFs = MUTUAL_FUNDS;
+          const selectedMFs = allMFs.sort(() => Math.random() - 0.5).slice(0, 3);
+          const loadedMFs = [];
+          for (const mf of selectedMFs) {
+            const data = await loadStockDataFromCSV(mf.csvFile, 'Mutual_Funds');
+            if (data && data.prices) {
+              loadedMFs.push({ ...mf, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.mutualFunds = loadedMFs;
+          console.log(`    ✅ Loaded ${loadedMFs.length} Mutual Funds`);
+          break;
+
+        case 'indexFunds':
+          const allIndexFunds = INDEX_FUNDS;
+          const selectedIndexFunds = allIndexFunds.sort(() => Math.random() - 0.5).slice(0, 2);
+          const loadedIndexFunds = [];
+          for (const fund of selectedIndexFunds) {
+            const data = await loadStockDataFromCSV(fund.csvFile, 'Index_Funds');
+            if (data && data.prices) {
+              loadedIndexFunds.push({ ...fund, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.indexFunds = loadedIndexFunds;
+          console.log(`    ✅ Loaded ${loadedIndexFunds.length} Index Funds`);
+          break;
+
+        case 'commodities':
+          const allCommodities = COMMODITIES;
+          const commodityCount = Math.min(3, allCommodities.length);
+          const selectedCommodities = allCommodities.sort(() => Math.random() - 0.5).slice(0, commodityCount);
+          const loadedCommodities = [];
+          for (const commodity of selectedCommodities) {
+            const data = await loadStockDataFromCSV(commodity.csvFile, 'Commodities');
+            if (data && data.prices) {
+              loadedCommodities.push({ ...commodity, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.commodities = loadedCommodities;
+          console.log(`    ✅ Loaded ${loadedCommodities.length} Commodities`);
+          break;
+
+        case 'crypto':
+          const allCrypto = CRYPTO_ASSETS;
+          const loadedCrypto = [];
+          for (const crypto of allCrypto) {
+            const data = await loadStockDataFromCSV(crypto.csvFile, 'Crypto_Assets');
+            if (data && data.prices) {
+              loadedCrypto.push({ ...crypto, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.crypto = loadedCrypto;
+          console.log(`    ✅ Loaded ${loadedCrypto.length} Crypto assets`);
+          break;
+
+        case 'reit':
+          const allREITs = REIT_ASSETS;
+          const loadedREITs = [];
+          for (const reit of allREITs) {
+            const data = await loadStockDataFromCSV(reit.csvFile, 'REIT');
+            if (data && data.prices) {
+              loadedREITs.push({ ...reit, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.reit = loadedREITs;
+          console.log(`    ✅ Loaded ${loadedREITs.length} REITs`);
+          break;
+
+        case 'forex':
+          const allForex = FOREX_ASSETS;
+          const loadedForex = [];
+          for (const forex of allForex) {
+            const data = await loadStockDataFromCSV(forex.csvFile, 'Forex');
+            if (data && data.prices) {
+              loadedForex.push({ ...forex, prices: data.prices, startYear: data.startYear, endYear: data.endYear });
+            }
+          }
+          gameAssets.forex = loadedForex;
+          console.log(`    ✅ Loaded ${loadedForex.length} Forex pairs`);
+          break;
+      }
+    }
+
+    console.log('\n✅ ============================================');
+    console.log('   Asset Loading Complete!');
+    console.log('============================================\n');
+
+    return {
+      ...gameAssets,
+      fdRates,
+      randomAssets: selectedCategories.map(c => c.key),
+      randomAssetsDisplay: selectedCategories,
+      startYear: gameStartYear,
+      endYear: gameEndYear
+    };
+
+  } catch (error) {
+    console.error('❌ Failed to initialize game assets:', error);
+    return null;
+  }
+};
+
+// OLD: Initialize game with Asset Timeline filtering (DEPRECATED)
 const initializeGameAssets = async (gameStartYear) => {
   console.log(`\n🎮 ============================================`);
   console.log(`   Initializing Game for Year ${gameStartYear}`);
@@ -619,7 +1104,7 @@ const initializeGameAssets = async (gameStartYear) => {
     
     // Step 2: Load FD Rates
     console.log('\n💰 Step 2: Loading FD Rates...');
-    const fdRates = await loadFDRatesFromCSV();
+    const fdRates = await loadFDRates();
     
     // Step 3: Select Random Assets for years 5-7
     console.log('\n🎲 Step 3: Selecting Random Asset Categories...');
@@ -632,119 +1117,96 @@ const initializeGameAssets = async (gameStartYear) => {
     // Step 4: Filter and Load Core Assets
     console.log('\n📊 Step 4: Loading Core Assets...');
     
-    // --- STOCKS ---
-    console.log('\n  🏢 Loading Stocks...');
-    
-    // Load all stocks from timeline instead of hardcoded list
-    const allStocks = await loadAllStocksFromTimeline(timeline, gameStartYear);
-    
-    if (allStocks.length === 0) {
-      console.error('❌ No stocks available from timeline');
-      return null;
-    }
-    
-    // Randomly select 2-4 stocks
-    const minStocks = 2;
-    const maxStocks = 4;
-    const numStocks = Math.floor(Math.random() * (maxStocks - minStocks + 1)) + minStocks;
-    const shuffledStocks = allStocks.sort(() => Math.random() - 0.5);
-    const selectedStocksMeta = shuffledStocks.slice(0, numStocks);
-    
-    console.log(`  🎲 Selected ${selectedStocksMeta.length} random stocks from ${allStocks.length} available`);
-    
-    // Load data for selected stocks
-    const stocks = [];
-    for (const stockMeta of selectedStocksMeta) {
-      const data = await loadStockDataFromCSV(stockMeta.csvFile, 'Indian_Stocks');
-      if (data && data.prices && data.prices.length >= 20) {
-        stocks.push({
-          ...stockMeta,
-          prices: data.prices,
-          startYear: data.startYear,
-          endYear: data.endYear
-        });
-        console.log(`    ✅ ${stockMeta.id}: ${data.startYear}-${data.endYear}`);
-      }
-    }
-    
-    if (stocks.length === 0) {
-      console.error('❌ Failed to load any stock data');
-      return null;
-    }
-    
-    console.log(`  ✅ Successfully loaded ${stocks.length} stocks`);
-
-
-    // --- GOLD ---
-    console.log('\n  🏆 Loading Gold...');
-    const filteredGold = filterAssetsByTimeline(
-      GOLD_ASSETS,
-      'Gold_Investments',
-      gameStartYear,
-      timeline,
-      20
-    );
-
-    let gold = null;
-    if (filteredGold.length > 0) {
-      const goldAsset = filteredGold[0]; // Use Physical_Gold
-      const data = await loadStockDataFromCSV(goldAsset.csvFile, 'Gold_Investments');
-      if (data && data.prices && data.prices.length >= 20) {
-        gold = {
-          ...goldAsset,
-          prices: data.prices,
-          startYear: data.startYear,
-          endYear: data.endYear
-        };
-        console.log(`  ✅ Gold loaded: ${data.startYear}-${data.endYear}`);
-      }
-    }
-
-    // Fallback to default gold data if CSV loading failed
-    if (!gold) {
-      console.log('  ⚠️ Using fallback gold data');
-      gold = FALLBACK_STOCK_DATA.gold;
-    }
-    
-    // Step 5: Load Random Asset Categories
+    // Step 4: Load Asset Categories Based on Selection
     console.log('\n🎁 Step 5: Loading Random Asset Categories...');
     const randomAssetsData = {};
     
     for (const category of randomAssetCategories) {
       console.log(`\n  📦 Loading ${category.name}...`);
-      
-      let assetList, folder;
-      
+
+      let assetList, folder, maxSelection;
+
       switch (category.key) {
+        case 'stocks':
+          // Load all stocks and select 2-4 random
+          const allStocks = await loadAllStocksFromTimeline(timeline, gameStartYear);
+          if (allStocks.length === 0) {
+            console.warn('  ⚠️ No stocks available from timeline');
+            continue;
+          }
+          const minStocks = 2;
+          const maxStocks = 4;
+          const numStocks = Math.floor(Math.random() * (maxStocks - minStocks + 1)) + minStocks;
+          assetList = allStocks.sort(() => Math.random() - 0.5).slice(0, numStocks);
+          folder = 'Indian_Stocks';
+          maxSelection = numStocks;
+          console.log(`  🎲 Selecting ${numStocks} random stocks from ${allStocks.length} available`);
+          break;
+
+        case 'gold':
+          // Load gold (Physical_Gold.csv)
+          assetList = filterAssetsByTimeline(GOLD_ASSETS, 'Gold_Investments', gameStartYear, timeline, 20);
+          folder = 'Gold_Investments';
+          maxSelection = 1; // Only one gold asset
+          console.log(`  ✅ Loading Gold investment`);
+          break;
+
         case 'mutualFunds':
+          // Select 3 random Mutual Funds
           assetList = filterAssetsByTimeline(MUTUAL_FUNDS, 'Mutual_Funds', gameStartYear, timeline, 20);
           folder = 'Mutual_Funds';
+          maxSelection = 3;
+          console.log(`  🎲 Selecting 3 random Mutual Funds from ${assetList.length} available`);
           break;
+
         case 'indexFunds':
+          // Select 2 random Index Funds
           assetList = filterAssetsByTimeline(INDEX_FUNDS, 'Index_Funds', gameStartYear, timeline, 20);
           folder = 'Index_Funds';
+          maxSelection = 2;
+          console.log(`  🎲 Selecting 2 random Index Funds from ${assetList.length} available`);
           break;
+
         case 'commodities':
+          // Select max 3 random commodities
           assetList = filterAssetsByTimeline(COMMODITIES, 'Commodities', gameStartYear, timeline, 20);
           folder = 'Commodities';
+          maxSelection = Math.min(3, assetList.length);
+          console.log(`  🎲 Selecting ${maxSelection} random Commodities from ${assetList.length} available`);
           break;
+
         case 'reit':
+          // Include all REITs but will unlock progressively (Embassy 2019, Mindspace 2020)
           assetList = filterAssetsByTimeline(REIT_ASSETS, 'REIT', gameStartYear, timeline, 20);
           folder = 'REIT';
+          maxSelection = assetList.length; // Include all, unlock progressively
+          console.log(`  ✅ Including all ${assetList.length} REITs (progressive unlock)`);
           break;
+
         case 'crypto':
+          // Include both BTC + ETH together
           assetList = filterAssetsByTimeline(CRYPTO_ASSETS, 'Crypto_Assets', gameStartYear, timeline, 20);
           folder = 'Crypto_Assets';
+          maxSelection = assetList.length; // Include all (should be BTC + ETH)
+          console.log(`  ✅ Including both BTC + ETH (unlock together)`);
           break;
+
         case 'forex':
           assetList = filterAssetsByTimeline(FOREX_ASSETS, 'Forex', gameStartYear, timeline, 20);
           folder = 'Forex';
+          maxSelection = assetList.length;
           break;
+
         default:
           console.warn(`  ⚠️ Unknown category: ${category.key}`);
           continue;
       }
-      
+
+      // Random selection for categories that need it
+      if (maxSelection && maxSelection < assetList.length) {
+        assetList = assetList.sort(() => Math.random() - 0.5).slice(0, maxSelection);
+      }
+
       const loaded = [];
       for (const assetMeta of assetList) {
         const data = await loadStockDataFromCSV(assetMeta.csvFile, folder);
@@ -757,28 +1219,44 @@ const initializeGameAssets = async (gameStartYear) => {
           });
         }
       }
-      
+
       randomAssetsData[category.key] = loaded;
-      console.log(`  ✅ ${category.name}: ${loaded.length} assets`);
+      console.log(`  ✅ ${category.name}: ${loaded.length} assets loaded`);
     }
     
-    // Step 6: Summary
+    // Step 6: Extract stocks and gold from randomAssetsData (they get special treatment)
+    let stocks = [];
+    let gold = null;
+
+    if (randomAssetsData.stocks && randomAssetsData.stocks.length > 0) {
+      stocks = randomAssetsData.stocks;
+      delete randomAssetsData.stocks; // Remove from randomAssetsData
+    }
+
+    if (randomAssetsData.gold && randomAssetsData.gold.length > 0) {
+      gold = randomAssetsData.gold[0]; // Get the single gold asset
+      delete randomAssetsData.gold; // Remove from randomAssetsData
+    }
+
+    // Step 7: Summary
     console.log(`\n✅ ============================================`);
     console.log(`   Game Initialization Complete!`);
     console.log(`============================================`);
     console.log(`   📈 Stocks: ${stocks.length}`);
     console.log(`   🏆 Gold: ${gold ? '1' : '0'}`);
-    randomAssetCategories.forEach(cat => {
-      console.log(`   ${cat.name}: ${randomAssetsData[cat.key]?.length || 0}`);
-    });
+    randomAssetCategories
+      .filter(cat => cat.key !== 'gold' && cat.key !== 'stocks') // Don't list twice
+      .forEach(cat => {
+        console.log(`   ${cat.name}: ${randomAssetsData[cat.key]?.length || 0}`);
+      });
     console.log(`============================================\n`);
-    
+
     return {
       stocks: stocks,
       gold,
       fdRates,
-      randomAssets: randomAssetCategories.map(c => c.key),
-      randomAssetsDisplay: randomAssetCategories,
+      randomAssets: randomAssetCategories.map(c => c.key).filter(k => k !== 'gold' && k !== 'stocks'),
+      randomAssetsDisplay: randomAssetCategories.filter(c => c.key !== 'gold' && c.key !== 'stocks'),
       ...randomAssetsData
     };
     
@@ -790,7 +1268,7 @@ const initializeGameAssets = async (gameStartYear) => {
 
 function App() {
   const [screen, setScreen] = useState('menu');
-  const [fdRates, setFdRates] = useState({ '3M': [4.5], '1Y': [6.5], '3Y': [7.5] });
+  const [fdRates, setFdRates] = useState({ '1Y': [], '2Y': [], '3Y': [], '5Y': [] });
   const [mode, setMode] = useState(null);
   const [gameState, setGameState] = useState('instructions');
   const [currentMonth, setCurrentMonth] = useState(0);
@@ -842,7 +1320,7 @@ function App() {
 
 
   useEffect(() => {
-    loadFDRatesFromCSV().then(setFdRates);
+    loadFDRates().then(setFdRates);
   }, []);
 
 useEffect(() => {
@@ -1137,119 +1615,149 @@ useEffect(() => {
 
 
   const getCurrentFDRate = (tenure) => {
-  const yearOffset = Math.floor(currentMonth / 12);
-  const idx = Math.min(gameStartYear + yearOffset, fdRates[tenure].length - 1);
-  return fdRates[tenure][idx] || 6.5;
-};
+    const yearOffset = Math.floor(currentMonth / 12);
+    const currentYear = gameStartYear + yearOffset;
+    // FD rates are indexed by year (1990-2025)
+    return fdRates[tenure][currentYear] || 6.5;
+  };
 
 
 
 const MutualFundCard = ({ fund }) => {
+  ensureShakeStylesInjected();
+  const [isShaking, setIsShaking] = React.useState(false);
   const currentNAV = getCurrentPrice(fund.id, currentMonth);
   const myMF = investments.mutualFunds.find(m => m.id === fund.id);
   const currentMFAmount = mutualFundAmounts[fund.id] || 5000;
   const setCurrentMFAmount = (value) => {
     setMutualFundAmounts(prev => ({ ...prev, [fund.id]: value }));
   };
-  
-const myUnits = myMF?.units || 0;
-const avgNAV = myMF?.avgPrice || 0; // ✅ Changed from avgNAV to avgPrice
+
+  // Month-over-month change and sparkline (to match AssetCard visuals)
+  const prevNAV = currentMonth > 0 ? getCurrentPrice(fund.id, currentMonth - 1) : currentNAV;
+  const monthChange = prevNAV > 0 ? ((currentNAV - prevNAV) / prevNAV * 100) : 0;
+  const sparklineData = React.useMemo(() => {
+    const history = [];
+    const startMonth = Math.max(0, currentMonth - 11);
+    for (let m = startMonth; m <= currentMonth; m++) {
+      history.push(getCurrentPrice(fund.id, m));
+    }
+    return history;
+  }, [fund.id, currentMonth]);
+  const minPrice = Math.min(...sparklineData);
+  const maxPrice = Math.max(...sparklineData);
+  const priceRange = maxPrice - minPrice || 1;
+
+  const myUnits = myMF?.units || 0;
+  const avgNAV = myMF?.avgPrice || 0;
   const currentValue = myUnits * currentNAV;
   const profitLoss = myUnits > 0 ? currentValue - (myUnits * avgNAV) : 0;
-  
+
+  const isLoss = myUnits > 0 && profitLoss < 0;
   return (
-    <div className="bg-white p-4 rounded-lg border-2 border-purple-200">
-      <div className="font-bold text-gray-800 mb-1">{fund.name}</div>
-      <div className="text-xs text-gray-600 mb-2">{fund.category}</div>
-      <div className="text-2xl font-bold text-purple-600 mb-2">₹{currentNAV.toFixed(2)}</div>
-      
+    <div className={`bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
+      {/* Header - align to AssetCard */}
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <div className="font-bold text-gray-800 text-lg">{fund.id}</div>
+            {monthChange >= 0 ? 
+              <TrendingUp className="w-4 h-4 text-green-600" /> : 
+              <TrendingDown className="w-4 h-4 text-red-600" />
+            }
+          </div>
+          <div className="text-xs text-gray-600">Mutual Fund</div>
+          <div className="font-bold text-gray-800 text-sm mb-1">{fund.name}</div>
+        </div>
+
+        {/* Sparkline */}
+        {sparklineData.length > 1 && (
+          <svg width="80" height="30" className="ml-2">
+            <polyline
+              fill="none"
+              stroke={monthChange >= 0 ? "#16a34a" : "#dc2626"}
+              strokeWidth="2"
+              points={sparklineData.map((price, i) => {
+                const x = (i / (sparklineData.length - 1)) * 80;
+                const y = 30 - ((price - minPrice) / priceRange) * 30;
+                return `${x},${y}`;
+              }).join(' ')}
+            />
+          </svg>
+        )}
+      </div>
+
+      {/* Current NAV and change */}
+      <div className="mb-3">
+        <div className="text-2xl font-bold text-purple-600">{formatCurrency(currentNAV)}</div>
+        <div className={`text-sm font-semibold ${monthChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+          {monthChange >= 0 ? '▲' : '▼'} {Math.abs(monthChange).toFixed(2)}% this month
+        </div>
+      </div>
+
+      {/* Holdings summary */}
       {myUnits > 0 && (
-        <div className="mb-3 p-2 bg-purple-50 rounded text-sm">
-          <div>Units: {myUnits.toFixed(3)}</div>
-          <div>Value: {formatCurrency(currentValue)}</div>
-          <div className={profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}>
-            P&L: {formatCurrency(profitLoss)}
+        <div className="mb-3 p-3 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-200">
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <span className="text-xs text-gray-600">Units:</span>
+              <span className="font-bold text-gray-800 ml-1">{myUnits.toFixed(3)}</span>
+            </div>
+            <div>
+              <span className="text-xs text-gray-600">Avg:</span>
+              <span className="font-bold text-gray-800 ml-1">{formatCurrency(avgNAV)}</span>
+            </div>
+          </div>
+          <div className="border-t border-purple-200 pt-2">
+            <div className="text-xs text-gray-600 mb-1">Current Value</div>
+            <div className="text-lg font-bold text-gray-800">{formatCurrency(currentValue)}</div>
+            <div className={`text-sm font-bold ${profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {formatCurrency(profitLoss)}
+            </div>
           </div>
         </div>
       )}
-      
-      {/* Investment Amount Selector */}
+
+      {/* Investment amount selector */}
       <div className="mb-3">
         <label className="text-xs text-gray-600 mb-2 block">Select Amount</label>
         <div className="grid grid-cols-2 gap-1">
-          <button
-            onClick={() => setCurrentMFAmount(5000)}
-            className={`py-2 rounded text-xs font-semibold transition-colors ${
-              currentMFAmount === 5000
-                ? 'bg-purple-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            ₹5K
-          </button>
-          <button
-            onClick={() => setCurrentMFAmount(10000)}
-            className={`py-2 rounded text-xs font-semibold transition-colors ${
-              currentMFAmount === 10000
-                ? 'bg-purple-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            ₹10K
-          </button>
-          <button
-            onClick={() => setCurrentMFAmount(25000)}
-            className={`py-2 rounded text-xs font-semibold transition-colors ${
-              currentMFAmount === 25000
-                ? 'bg-purple-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            ₹25K
-          </button>
-          <button
-            onClick={() => setCurrentMFAmount(pocketCash)}
-            className={`py-2 rounded text-xs font-semibold transition-colors ${
-              currentMFAmount === pocketCash
-                ? 'bg-purple-600 text-white'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-            title="Max affordable"
-          >
-            MAX
-          </button>
+          <button onClick={() => setCurrentMFAmount(5000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 5000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹5K</button>
+          <button onClick={() => setCurrentMFAmount(10000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 10000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹10K</button>
+          <button onClick={() => setCurrentMFAmount(25000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 25000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹25K</button>
+          <button onClick={() => setCurrentMFAmount(pocketCash)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === pocketCash ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`} title="Max affordable">MAX</button>
         </div>
       </div>
-      
+
+      {/* Actions */}
       <div className="grid grid-cols-2 gap-2">
-      <button onClick={() => {
-        if (mode === 'multiplayer' && multiplayer.socket) {
+        <button onClick={() => {
+          if (currentMFAmount > pocketCash) {
+            setIsShaking(true);
+            setTimeout(() => setIsShaking(false), 400);
+            return;
+          }
+          if (mode === 'multiplayer' && multiplayer.socket) {
             multiplayer.buyMutualFund(fund.id, currentMFAmount);
-        } else {
+          } else {
             buyMutualFund(fund.id, currentMFAmount);
-        }
-        }}
-        disabled={currentMFAmount > pocketCash}
-        className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-        Invest
-      </button>
-      <button onClick={() => {
-        if (mode === 'multiplayer' && multiplayer.socket) {
+          }
+        }} disabled={currentMFAmount > pocketCash} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors">Invest</button>
+        <button onClick={() => {
+          if (mode === 'multiplayer' && multiplayer.socket) {
             multiplayer.sellMutualFund(fund.id, myUnits);
-        } else {
+          } else {
             sellMutualFund(fund.id, myUnits);
-        }
-          }} 
-        disabled={myUnits === 0}
-        className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-        Redeem All
-      </button>
+          }
+        }} disabled={myUnits === 0} className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors">Redeem All</button>
       </div>
     </div>
   );
 };
 
 const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) => {
+  ensureShakeStylesInjected();
+  const [isShaking, setIsShaking] = React.useState(false);
   const currentPrice = getCurrentPrice(asset.id, currentMonth);
   const myAsset = investments[category]?.find(a => a.id === asset.id);
   
@@ -1283,7 +1791,11 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
 
   // Buy handler
   const handleBuy = () => {
-    if (totalCost > pocketCash) return;
+    if (totalCost > pocketCash) {
+      setIsShaking(true);
+      setTimeout(() => setIsShaking(false), 400);
+      return;
+    }
     
     if (mode === 'multiplayer' && multiplayer.socket) {
       // For multiplayer, emit socket event
@@ -1315,8 +1827,9 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
     }
   };
 
+  const isLoss = myUnits > 0 && profitLoss < 0;
   return (
-    <div className="bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors">
+    <div className={`bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
       {/* Header Section */}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
@@ -1462,6 +1975,8 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
 };
 
 const GoldCard = () => {
+  ensureShakeStylesInjected();
+  const [isShaking, setIsShaking] = React.useState(false);
   const currentPricePer10g = getCurrentGoldPrice(currentMonth);
   const gramsToBuy = goldQty; // Use parent state instead of local state
 
@@ -1476,7 +1991,7 @@ const GoldCard = () => {
   const profitLossPercent = investments.gold.totalInvested > 0 ? (profitLoss / investments.gold.totalInvested * 100) : 0;
   
   return (
-    <div className="bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors">
+    <div className={`bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors ${isShaking ? 'gv3-shake' : ''}`}>
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
           <div className="flex items-center gap-2">
@@ -1560,6 +2075,11 @@ const GoldCard = () => {
         <button
           onClick={() => {
             const cost = pricePerGram * gramsToBuy;
+            if (cost > pocketCash) {
+              setIsShaking(true);
+              setTimeout(() => setIsShaking(false), 400);
+              return;
+            }
             if (cost <= pocketCash) {
               setPocketCash(prev => prev - cost);
               setInvestments(prev => {
@@ -1622,17 +2142,28 @@ const GoldCard = () => {
   };
 
 
-  const handleCreateMultiplayerRoom = async (startYear, playerName) => {
-    console.log(`🏠 Creating multiplayer room for year ${startYear}`);
-    
-    const gameAssets = await initializeGameAssets(startYear);
-    
+  const handleCreateMultiplayerRoom = async (ignoredStartYear, playerName) => {
+    console.log(`🏠 Creating multiplayer room (dynamic years)`);
+
+    // Mirror solo flow: select categories, compute dynamic start/end by latest end + 5
+    const selectedCategories = await selectRandomAssets(null, null);
+    const timeline = await loadAssetTimeline();
+    const latestIntroYear = await findLatestIntroductionYear(selectedCategories, timeline);
+    const BUFFER_YEARS = 5;
+    const GAME_DURATION = 20;
+    let endYear = Math.min(latestIntroYear + BUFFER_YEARS, 2025);
+    let startYear = Math.max(1990, endYear - GAME_DURATION);
+    if (endYear - startYear < GAME_DURATION) {
+      endYear = Math.min(2025, startYear + GAME_DURATION);
+    }
+
+    const gameAssets = await initializeGameAssetsV2(startYear, endYear, selectedCategories, timeline);
     if (!gameAssets) {
       console.error('Failed to load game assets');
       return;
     }
-    
-    // Create room with all asset data
+
+    // Send full dataset to server so it can manage unlocks in sync
     multiplayer.createRoom(playerName, {
       stocks: gameAssets.stocks || [],
       gold: gameAssets.gold,
@@ -1643,9 +2174,10 @@ const GoldCard = () => {
       reit: gameAssets.reit || [],
       forex: gameAssets.forex || [],
       randomAssets: gameAssets.randomAssets || [],
-      gameStartYear: startYear
+      gameStartYear: startYear,
+      gameEndYear: endYear
     });
-    
+
     setGameStartYear(startYear);
   };
 
@@ -1672,16 +2204,14 @@ const getCurrentPrice = (assetId, monthOffset) => {
   const absoluteYear = gameStartYear + gameYear;
   
   // Index in asset's price array
-  const priceIndex = absoluteYear - asset.startYear;
+  let priceIndex = absoluteYear - asset.startYear;
+  // Clamp to available range to avoid out-of-bounds when game runs beyond data
+  if (priceIndex < 0) priceIndex = 0;
+  if (priceIndex >= asset.prices.length) priceIndex = asset.prices.length - 1;
   const nextPriceIndex = priceIndex + 1;
-  
-  if (priceIndex < 0 || priceIndex >= asset.prices.length) {
-    console.warn(`⚠️ Price out of bounds for ${assetId}`);
-    return asset.prices[asset.prices.length - 1] || 0;
-  }
-  
+
   const currentYearPrice = asset.prices[priceIndex];
-  
+
   if (nextPriceIndex < asset.prices.length) {
     const nextYearPrice = asset.prices[nextPriceIndex];
     const interpolated = currentYearPrice + (nextYearPrice - currentYearPrice) * (monthInYear / 12);
@@ -1809,17 +2339,43 @@ const handleEvent = (event) => {
   
   // For solo mode, handle unlock locally
   if (event.unlock && mode === 'solo') {
-    console.log(`🔓 UNLOCKING: ${event.unlock}`);
-    setAvailableInvestments(prev => {
-      if (!prev.includes(event.unlock)) {
-        const newInvestments = [...prev, event.unlock];
-        console.log(`✅ Available investments now:`, newInvestments);
-        return newInvestments;
-      }
-      return prev;
-    });
+    console.log(`🔓 UNLOCKING: ${event.unlock}${event.subkey ? ` (${event.subkey})` : ''}`);
+
+    // Special handling for REIT progressive unlock
+    if (event.unlock === 'reit' && event.subkey) {
+      // Progressive REIT unlock: Add specific REIT to available list
+      setAvailableREITs(prev => {
+        if (!window.gameAssets?.reit) return prev;
+
+        const reitToUnlock = window.gameAssets.reit.find(r => r.id === event.subkey);
+        if (reitToUnlock && !prev.find(r => r.id === event.subkey)) {
+          const newREITs = [...prev, reitToUnlock];
+          console.log(`✅ REIT unlocked: ${reitToUnlock.name}`);
+          return newREITs;
+        }
+        return prev;
+      });
+
+      // Also add 'reit' to available investments if not already there
+      setAvailableInvestments(prev => {
+        if (!prev.includes('reit')) {
+          return [...prev, 'reit'];
+        }
+        return prev;
+      });
+    } else {
+      // Standard unlock for other asset categories
+      setAvailableInvestments(prev => {
+        if (!prev.includes(event.unlock)) {
+          const newInvestments = [...prev, event.unlock];
+          console.log(`✅ Available investments now:`, newInvestments);
+          return newInvestments;
+        }
+        return prev;
+      });
+    }
   }
-  
+
   // For multiplayer, availableInvestments comes from server
   // Always show unlock notification
   if (event.unlock) {
@@ -1829,8 +2385,14 @@ const handleEvent = (event) => {
 };
 
   const updateInvestments = () => {
-    if (investments.savings.amount > 0) {
-      setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: prev.savings.amount * (1 + prev.savings.roi / 100 / 12) } }));
+  if (investments.savings.amount > 0) {
+      setInvestments(prev => ({ 
+        ...prev, 
+        savings: { 
+          ...prev.savings, 
+          amount: Math.round(prev.savings.amount * (1 + prev.savings.roi / 100 / 12)) 
+        } 
+      }));
     }
 
 
@@ -1960,17 +2522,34 @@ const startGame = async () => {
     }
     
   } else {
-    // Solo Mode: Initialize everything
-    
-    // Step 1: Choose a random start year
-    // Only use years where we can guarantee 20 years of data
-    const potentialYears = [2000, 2001, 2002, 2003, 2004, 2005];
-    startYear = potentialYears[Math.floor(Math.random() * potentialYears.length)];
-    
-    console.log(`📅 Selected start year: ${startYear}`);
-    
-    // Step 2: Load ALL game assets with proper filtering
-    gameAssets = await initializeGameAssets(startYear);
+    // Solo Mode: NEW APPROACH - Select assets first, then determine year range
+
+    console.log('📅 Step 1: Selecting asset categories first...');
+
+    // Step 1: Select 6 random categories (+ SAC and FD always)
+    const selectedCategories = await selectRandomAssets(null, null); // No year needed yet
+
+    // Step 2: Determine the latest INTRODUCTION year with progressive categories (crypto/reit use latest sub-asset start)
+    const timeline = await loadAssetTimeline();
+    const latestIntroYear = await findLatestIntroductionYear(selectedCategories, timeline);
+
+    console.log(`📅 Latest asset introduction year (progressive-aware): ${latestIntroYear}`);
+
+    // Step 3: Calculate game end year = latestIntro + 5 (cap 2025), start = end - 20
+    const BUFFER_YEARS = 5;
+    const GAME_DURATION = 20; // 20 years
+    let endYear = Math.min(latestIntroYear + BUFFER_YEARS, 2025);
+    startYear = Math.max(1990, endYear - GAME_DURATION);
+
+    // If clamped by 1990, maintain 20-year duration by shifting endYear forward if needed
+    if (endYear - startYear < GAME_DURATION) {
+      endYear = Math.min(2025, startYear + GAME_DURATION);
+    }
+
+    console.log(`📅 Calculated game period: ${startYear} to ${endYear} (${endYear - startYear} years, buffer: ${BUFFER_YEARS} years)`);
+
+    // Step 4: Load game assets with the calculated years
+    gameAssets = await initializeGameAssetsV2(startYear, endYear, selectedCategories, timeline);
     
     if (!gameAssets) {
       console.error('❌ Failed to initialize game assets');
@@ -1980,40 +2559,53 @@ const startGame = async () => {
     // ADD THIS LINE HERE:
     window.gameAssets = gameAssets;  // ✅ Store for unlock access
 
-    // Validate we have minimum required assets
-    if (!gameAssets.stocks || gameAssets.stocks.length === 0) {
-      console.error('❌ No stocks available for this start year');
-      alert(`No stocks available for year ${startYear}. Please try again.`);
+    // Validate we have at least one tradable asset category
+    const totalTradables =
+      (gameAssets.stocks?.length || 0) +
+      (gameAssets.mutualFunds?.length || 0) +
+      (gameAssets.indexFunds?.length || 0) +
+      (gameAssets.commodities?.length || 0) +
+      (gameAssets.crypto?.length || 0) +
+      (gameAssets.reit?.length || 0) +
+      (gameAssets.forex?.length || 0) +
+      (gameAssets.gold ? 1 : 0);
+
+    if (totalTradables === 0) {
+      console.error('❌ No tradable assets available for this configuration');
+      alert('No tradable assets available for this configuration. Please try again.');
       return;
     }
-    
+
     if (!gameAssets.gold) {
       console.warn('⚠️ Gold data not available');
     }
     
-    // Step 3: Set all available assets
-    stocks = gameAssets.stocks;
+    // Step 5: Set all available assets (but don't unlock them yet!)
+    stocks = gameAssets.stocks || [];
     setAvailableStocks(stocks);
-    
+
     setAvailableMutualFunds(gameAssets.mutualFunds || []);
     setAvailableIndexFunds(gameAssets.indexFunds || []);
     setAvailableCommodities(gameAssets.commodities || []);
     setAvailableREITs(gameAssets.reit || []);
     setAvailableCrypto(gameAssets.crypto || []);
     setAvailableForex(gameAssets.forex || []);
-    
+
     if (gameAssets.gold) {
       setGoldData(gameAssets.gold);
     }
-    
-    // Step 4: Generate random events
-    randomAssets = gameAssets.randomAssets || [];
-    const yearEvents = generateRandomEvents(randomAssets);
-    
+
+    // Store assets globally for unlock access
+    window.gameAssets = gameAssets;
+
+    // Step 4: Generate timeline-based events
+    // Use the calculated end year from gameAssets (not hardcoded 2025)
+    const yearEvents = generateTimelineBasedEvents(gameAssets, gameAssets.startYear, gameAssets.endYear);
+
     // Store events globally for solo mode
     window.gameYearEvents = yearEvents;
-    
-    console.log('📅 Year events generated:', Object.keys(yearEvents).length);
+
+    console.log('📅 Timeline-based events generated:', Object.keys(yearEvents).length);
   }
   
   // Common setup for both modes
@@ -2457,10 +3049,11 @@ const StockCard = ({ stock }) => {
           {multiplayer.error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-800"><AlertCircle className="w-5 h-5" />{multiplayer.error}</div>}
           <div className="space-y-4">
             <div><label className="block text-sm font-medium text-gray-700 mb-2">Your Name</label><input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Enter name" className="w-full px-4 py-3 border border-gray-300 rounded-lg" maxLength={20} /></div>
-            <button onClick={async () => { 
-  if (playerName.trim()) { 
-    const potentialYears = [2000, 2001, 2002, 2003, 2004, 2005];
-    const startYear = potentialYears[Math.floor(Math.random() * potentialYears.length)];
+            <button onClick={async () => {
+  if (playerName.trim()) {
+    const MIN_YEAR = 1990;
+    const MAX_YEAR = 2005;
+    const startYear = MIN_YEAR + Math.floor(Math.random() * (MAX_YEAR - MIN_YEAR + 1));
     
     // Use the same initialization function as solo mode
     await handleCreateMultiplayerRoom(startYear, playerName);
@@ -2629,7 +3222,7 @@ const StockCard = ({ stock }) => {
               <p className="text-sm text-gray-600 mb-4">4% p.a. | Max: ₹50,00,000</p>
               <div className="mb-4">
                 <div className="text-sm text-gray-600">Balance</div>
-                <div className="text-2xl font-bold text-green-600">{formatCurrency(investments.savings.amount)}</div>
+                <div className="text-2xl font-bold text-green-600">{formatCurrency(Math.round(investments.savings.amount))}</div>
               </div>
 
               {/* Single Amount Input */}
@@ -2667,7 +3260,7 @@ const StockCard = ({ stock }) => {
                       onClick={() => {
                         const input = document.getElementById('savingsAmount');
                         const maxDeposit = Math.min(pocketCash, 5000000 - investments.savings.amount);
-                        input.value = maxDeposit;
+                        input.value = Math.floor(maxDeposit);
                       }}
                       disabled={pocketCash === 0 || investments.savings.amount >= 5000000}
                       className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
@@ -2696,7 +3289,7 @@ const StockCard = ({ stock }) => {
                     <button
                       onClick={() => {
                         const input = document.getElementById('savingsAmount');
-                        input.value = investments.savings.amount;
+                        input.value = Math.floor(investments.savings.amount);
                       }}
                       disabled={investments.savings.amount === 0}
                       className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
@@ -2762,29 +3355,37 @@ const StockCard = ({ stock }) => {
                   })}
                 </div>
                 <div className="space-y-2">
-                  <button onClick={() => { 
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) { 
-                      setPocketCash(prev => prev - 10000); 
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 3, roi: getCurrentFDRate('3M'), monthsElapsed: 0, profit: 0 }] })); 
-                    } 
-                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
-                    3M FD ({getCurrentFDRate('3M').toFixed(1)}%)
-                  </button>
-                  <button onClick={() => { 
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) { 
-                      setPocketCash(prev => prev - 10000); 
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 12, roi: getCurrentFDRate('1Y'), monthsElapsed: 0, profit: 0 }] })); 
-                    } 
+                  <button onClick={() => {
+                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
+                      setPocketCash(prev => prev - 10000);
+                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 12, roi: getCurrentFDRate('1Y'), monthsElapsed: 0, profit: 0 }] }));
+                    }
                   }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
                     1Y FD ({getCurrentFDRate('1Y').toFixed(1)}%)
                   </button>
-                  <button onClick={() => { 
-                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) { 
-                      setPocketCash(prev => prev - 10000); 
-                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 36, roi: getCurrentFDRate('3Y'), monthsElapsed: 0, profit: 0 }] })); 
-                    } 
+                  <button onClick={() => {
+                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
+                      setPocketCash(prev => prev - 10000);
+                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 24, roi: getCurrentFDRate('2Y'), monthsElapsed: 0, profit: 0 }] }));
+                    }
+                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
+                    2Y FD ({getCurrentFDRate('2Y').toFixed(1)}%)
+                  </button>
+                  <button onClick={() => {
+                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
+                      setPocketCash(prev => prev - 10000);
+                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 36, roi: getCurrentFDRate('3Y'), monthsElapsed: 0, profit: 0 }] }));
+                    }
                   }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
                     3Y FD ({getCurrentFDRate('3Y').toFixed(1)}%)
+                  </button>
+                  <button onClick={() => {
+                    if (pocketCash >= 10000 && investments.fixedDeposits.length < 3) {
+                      setPocketCash(prev => prev - 10000);
+                      setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: 10000, duration: 60, roi: getCurrentFDRate('5Y'), monthsElapsed: 0, profit: 0 }] }));
+                    }
+                  }} disabled={pocketCash < 10000 || investments.fixedDeposits.length >= 3} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 rounded text-sm">
+                    5Y FD ({getCurrentFDRate('5Y').toFixed(1)}%)
                   </button>
                 </div>
               </div>
@@ -2852,7 +3453,9 @@ const StockCard = ({ stock }) => {
             <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
               <h3 className="text-xl font-bold text-gray-800 mb-4">REITs</h3>
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableREITs.map(reit => {
+                {availableREITs
+                  .filter(reit => typeof gameStartYear === 'number' ? reit.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
+                  .map(reit => {
                   const currentAmount = assetAmounts[reit.id] || 1;
                   const setCurrentAmount = (value) => {
                     setAssetAmounts(prev => ({ ...prev, [reit.id]: value }));
@@ -2877,7 +3480,9 @@ const StockCard = ({ stock }) => {
             <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
               <h3 className="text-xl font-bold text-gray-800 mb-4">Cryptocurrency</h3>
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableCrypto.map(crypto => {
+                {availableCrypto
+                  .filter(crypto => typeof gameStartYear === 'number' ? crypto.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
+                  .map(crypto => {
                   const currentAmount = assetAmounts[crypto.id] || 1;
                   const setCurrentAmount = (value) => {
                     setAssetAmounts(prev => ({ ...prev, [crypto.id]: value }));
