@@ -2594,8 +2594,13 @@ const handleEvent = (event) => {
                     const depositAmount = parseInt(input.value) || 0;
                     const newBalance = investments.savings.amount + depositAmount;
                     if (depositAmount > 0 && pocketCash >= depositAmount && newBalance <= 5000000) {
+                      // Update local state
                       setPocketCash(prev => prev - depositAmount);
                       setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: newBalance } }));
+                      // Sync with server in multiplayer
+                      if (mode === 'multiplayer' && multiplayer?.investSavings) {
+                        multiplayer.investSavings(depositAmount);
+                      }
                       input.value = '';
                     }
                   }}
@@ -2623,8 +2628,13 @@ const handleEvent = (event) => {
                     const input = document.getElementById('savingsAmount');
                     const withdrawAmount = parseInt(input.value) || 0;
                     if (withdrawAmount > 0 && investments.savings.amount >= withdrawAmount) {
+                      // Update local state
                       setPocketCash(prev => prev + withdrawAmount);
                       setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: prev.savings.amount - withdrawAmount } }));
+                      // Sync with server in multiplayer (negative amount acts as withdrawal)
+                      if (mode === 'multiplayer' && multiplayer?.investSavings) {
+                        multiplayer.investSavings(-withdrawAmount);
+                      }
                       input.value = '';
                     }
                   }}
@@ -2976,39 +2986,45 @@ useEffect(() => {
   }, [mode, multiplayer.socket]);
 
   // Add this NEW useEffect to handle year-event from server
+  const processedYearEventsRef = React.useRef(new Set());
+  const pocketCashRef = React.useRef(pocketCash);
+  React.useEffect(() => { pocketCashRef.current = pocketCash; }, [pocketCash]);
 useEffect(() => {
   if (mode !== 'multiplayer' || !multiplayer.socket) return;
   
   const handleYearEvent = (data) => {
     console.log('📅 Year event received:', data);
-    const { event, availableInvestments } = data;
+    const { event, availableInvestments, year, month } = data;
+
+    // Prevent duplicate processing in the same year (reconnects/re-renders)
+    const key = typeof year === 'number' ? `y:${year}` : (typeof month === 'number' ? `m:${month}` : undefined);
+    if (key) {
+      if (processedYearEventsRef.current.has(key)) return;
+      processedYearEventsRef.current.add(key);
+    }
     
     // Update available investments from server
     if (availableInvestments) {
       setAvailableInvestments(availableInvestments);
     }
     
-    // Show the event toast (non-intrusive notification)
+    // Show the event modal
     if (event) {
       setShowToast(event);
-      // Don't pause for non-critical events
 
-      // Handle gain/loss events with normalized delta
+      // Handle gain/loss events with normalized delta (allow negative cash)
       const delta = event.type === 'loss' ? -Math.abs(event.amount || 0) : Math.abs(event.amount || 0);
       if (event.type === 'gain') {
         setPocketCash(prev => prev + delta);
       } else if (event.type === 'loss') {
-        if (pocketCash >= Math.abs(delta)) {
-          setPocketCash(prev => prev + delta);
-          setMajorExpenses(prev => [...prev, {
-            month: currentMonth,
-            description: event.message,
-            amount: delta
-          }]);
-        } else {
-          setShowToast({ ...event, needFunds: true });
-          setIsPaused(true); // Only pause for insufficient funds
-        }
+        const required = Math.abs(delta);
+        setPocketCash(prev => prev - required);
+        setMajorExpenses(prev => [...prev, {
+          month: currentMonth,
+          description: event.message,
+          amount: -required
+        }]);
+        // Do not pause; a persistent debt toast will warn while cash < 0
       }
     }
   };
@@ -3415,20 +3431,24 @@ const StockCard = ({ stock }) => {
     const priceRange = maxPrice - minPrice || 1;
 
     const [showGif, setShowGif] = React.useState(false);
-    const gifShownRef = React.useRef(false);
+    const [gifKey, setGifKey] = React.useState(0);
+    const gifTimeoutRef = React.useRef(null);
 
     React.useEffect(() => {
-      if (!gifShownRef.current && (profitLossPercent >= 20 || profitLoss >= 10000)) {
-        gifShownRef.current = true;
+      const thresholdHit = profitLossPercent >= 20 || profitLoss >= 10000;
+      if (thresholdHit && canShowCelebrationForAsset(`stocks:${stock.id}`, currentMonth, 6)) {
+        if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current);
+        setGifKey(prev => prev + 1);
         setShowGif(true);
-        setTimeout(() => setShowGif(false), 3000);
+        gifTimeoutRef.current = setTimeout(() => setShowGif(false), 2500);
       }
-    }, [profitLoss, profitLossPercent]);
+      return () => { if (gifTimeoutRef.current) clearTimeout(gifTimeoutRef.current); };
+    }, [profitLoss, profitLossPercent, currentMonth]);
 
     return (
       <div className="relative bg-white p-4 rounded-lg border-2 border-blue-200 shadow-md hover:shadow-lg transition-shadow">
         {showGif && (
-          <img src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+          <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
         )}
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
@@ -3554,7 +3574,7 @@ const StockCard = ({ stock }) => {
           <div className="text-center mb-8">
             <img src="/Rupee_logo.png" alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
             <h1 className="text-4xl font-bold text-orange-600 mb-2">Build Your Dhan</h1>
-            <p className="text-gray-600">Stock Trading Challenge</p>
+            <p className="text-gray-600">Master the art of investing</p>
           </div>
           <div className="space-y-4">
             <button onClick={() => { setMode('solo'); setScreen('instructions'); }} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-lg text-lg font-semibold">Play Solo</button>
@@ -3794,7 +3814,7 @@ const StockCard = ({ stock }) => {
           </div>
         </div>
 
-        {/* Centered Event Modal (like original game) */}
+        {/* Centered Event Modal (gain/loss/unlock) */}
         {showToast && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-xl p-8 max-w-md w-full shadow-2xl animate-fadeIn">
@@ -3815,13 +3835,21 @@ const StockCard = ({ stock }) => {
               <button
                 onClick={() => {
                   setShowToast(null);
-                  setIsPaused(false);
                 }}
                 className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 rounded-lg font-semibold"
               >
                 Continue
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Persistent debt banner while pocket cash is negative (centered top, non-blocking) */}
+        {pocketCash < 0 && (
+          <div className="fixed top-2 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-lg bg-red-50 border border-red-300 shadow text-red-800 text-sm font-semibold flex items-center gap-2">
+            <span>😕 You are in debt:</span>
+            <span className="font-bold">{formatCurrency(pocketCash)}</span>
+            <span className="text-red-700 font-normal">Try To Pay Off Your Debt First.</span>
           </div>
         )}
 
