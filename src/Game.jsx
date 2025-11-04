@@ -37,7 +37,6 @@ import ToastNotification from './components/ToastNotification';
 import PortfolioOverview from './components/PortfolioOverview';
 import InvestmentTabs from './components/InvestmentTabs';
 import PlayerInvestmentBreakdown from './components/PlayerInvestmentBreakdown';
-import { assetUrl, dataUrl } from './utils/assetUrl';
 
 const MONTH_DURATION = parseInt(import.meta.env.VITE_SOLO_MONTH_DURATION || '5000');
 console.log('SOLO_MONTH_DURATION (raw):', import.meta.env.VITE_SOLO_MONTH_DURATION);
@@ -69,7 +68,7 @@ let __assetFilenameMapCache = null;
 const loadAssetFilenameMap = async () => {
   if (__assetFilenameMapCache) return __assetFilenameMapCache;
   try {
-    const resp = await fetch(dataUrl('asset_filename_mapping.json'));
+    const resp = await fetch('/data/asset_filename_mapping.json');
     if (resp.ok) {
       __assetFilenameMapCache = await resp.json();
       console.log('🔗 asset_filename_mapping.json loaded');
@@ -99,7 +98,7 @@ const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
     if (mapped !== filename) {
       console.log(`↪️ Mapping ${filename} -> ${mapped}`);
     }
-    const response = await fetch(dataUrl(`${folder}/${mapped}`));
+    const response = await fetch(`/data/${folder}/${mapped}`);
     if (!response.ok) {
       console.error(`Failed to fetch ${folder}/${mapped}: HTTP ${response.status}`);
       return null;
@@ -193,7 +192,7 @@ const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
 // Load Asset Timeline for filtering
 const loadAssetTimeline = async () => {
   try {
-    const response = await fetch(dataUrl('Asset_Timeline.csv'));
+    const response = await fetch('/data/Asset_Timeline.csv');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -1752,7 +1751,7 @@ const MutualFundCard = ({ fund }) => {
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
       {showGif && (
-        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       {/* Header - align to AssetCard */}
       <div className="flex justify-between items-start mb-3">
@@ -1944,7 +1943,7 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
       {showGif && (
-        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       {/* Header Section */}
       <div className="flex justify-between items-start mb-3">
@@ -2123,7 +2122,7 @@ const GoldCard = () => {
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''}`}>
       {showGif && (
-        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
@@ -3407,7 +3406,7 @@ const StockCard = ({ stock }) => {
     return (
       <div className="relative bg-white p-4 rounded-lg border-2 border-blue-200 shadow-md hover:shadow-lg transition-shadow">
         {showGif && (
-          <img src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+          <img src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
         )}
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
@@ -3531,7 +3530,7 @@ const StockCard = ({ stock }) => {
       <div className="min-h-screen bg-gradient-to-br from-orange-500 via-white to-green-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full border-4 border-orange-600">
           <div className="text-center mb-8">
-            <img src={assetUrl('Rupee_logo.png')} alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
+            <img src="/Rupee_logo.png" alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
             <h1 className="text-4xl font-bold text-orange-600 mb-2">Build Your Dhan</h1>
             <p className="text-gray-600">Stock Trading Challenge</p>
           </div>
