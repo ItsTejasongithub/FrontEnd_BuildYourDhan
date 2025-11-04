@@ -38,7 +38,12 @@ import PortfolioOverview from './components/PortfolioOverview';
 import InvestmentTabs from './components/InvestmentTabs';
 import PlayerInvestmentBreakdown from './components/PlayerInvestmentBreakdown';
 
+// SOLO: simulated time per month (ms)
 const MONTH_DURATION = parseInt(import.meta.env.VITE_SOLO_MONTH_DURATION || '5000');
+// BOTH (client-side): stipend amount added locally (server also controls in multiplayer)
+const MONTHLY_STIPEND = parseInt(import.meta.env.VITE_MONTHLY_STIPEND || '5000');
+// BOTH: how often stipend is paid (in months)
+const STIPEND_FREQUENCY_MONTHS = parseInt(import.meta.env.VITE_STIPEND_FREQUENCY_MONTHS || '1');
 console.log('SOLO_MONTH_DURATION (raw):', import.meta.env.VITE_SOLO_MONTH_DURATION);
 console.log('SOLO_MONTH_DURATION (parsed):', MONTH_DURATION);
 console.log('URL:', import.meta.env.VITE_SOCKET_URL);
@@ -2918,6 +2923,10 @@ useEffect(() => {
           const nextMonth = currentMonth + 1;
           setCurrentMonth(nextMonth);
           updateInvestments();
+          // Solo mode stipend: apply based on frequency (default monthly)
+          if (STIPEND_FREQUENCY_MONTHS > 0 && nextMonth % STIPEND_FREQUENCY_MONTHS === 0) {
+            setPocketCash(prev => prev + MONTHLY_STIPEND);
+          }
           const networth = calculateNetWorth();
           setNetworthHistory(prev => [...prev, { month: nextMonth, networth }]);
           const year = Math.floor(nextMonth / 12);
@@ -2935,8 +2944,9 @@ useEffect(() => {
         return () => { if (timerRef.current) clearTimeout(timerRef.current); };
       }
     } else if (mode === 'multiplayer' && gameState === 'playing') {
-      updateInvestments();
-      const networth = calculateNetWorth();
+          updateInvestments();
+          // Multiplayer: stipend handled by server via 'monthly-stipend' event only
+          const networth = calculateNetWorth();
       setNetworthHistory(prev => {
         const exists = prev.find(h => h.month === currentMonth);
         if (exists) return prev;
@@ -2952,6 +2962,18 @@ useEffect(() => {
       multiplayer.socket.emit('update-networth', { netWorth: networth, cash: pocketCash });
     }
   }, [currentMonth, pocketCash, investments.savings.amount, investments.mutualFunds.amount, investments.fixedDeposits.length, investments.gold.grams, investments.ppf.amount, investments.stocks.length, mode, gameState]);
+
+  // Listen for server monthly stipend and update pocket cash (multiplayer)
+  useEffect(() => {
+    if (mode !== 'multiplayer' || !multiplayer.socket) return;
+    const onStipend = (data) => {
+      if (data && typeof data.pocketCash === 'number') {
+        setPocketCash(data.pocketCash);
+      }
+    };
+    multiplayer.socket.on('monthly-stipend', onStipend);
+    return () => multiplayer.socket.off('monthly-stipend', onStipend);
+  }, [mode, multiplayer.socket]);
 
   // Add this NEW useEffect to handle year-event from server
 useEffect(() => {
