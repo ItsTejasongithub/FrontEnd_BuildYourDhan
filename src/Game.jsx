@@ -32,6 +32,12 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Calendar, Trophy, IndianRupee, Play, TrendingUp, TrendingDown, X, ArrowLeft, Users, Copy, Check, Clock, AlertCircle, BarChart3 } from 'lucide-react';
 import { useMultiplayer } from './hooks/useMultiplayer';
 import { loadFDRates } from './utils/assetLoader';
+import GameControlBar from './components/GameControlBar';
+import ToastNotification from './components/ToastNotification';
+import PortfolioOverview from './components/PortfolioOverview';
+import InvestmentTabs from './components/InvestmentTabs';
+import PlayerInvestmentBreakdown from './components/PlayerInvestmentBreakdown';
+import { assetUrl, dataUrl } from './utils/assetUrl';
 
 const MONTH_DURATION = parseInt(import.meta.env.VITE_SOLO_MONTH_DURATION || '5000');
 console.log('SOLO_MONTH_DURATION (raw):', import.meta.env.VITE_SOLO_MONTH_DURATION);
@@ -63,7 +69,7 @@ let __assetFilenameMapCache = null;
 const loadAssetFilenameMap = async () => {
   if (__assetFilenameMapCache) return __assetFilenameMapCache;
   try {
-    const resp = await fetch('/data/asset_filename_mapping.json');
+    const resp = await fetch(dataUrl('asset_filename_mapping.json'));
     if (resp.ok) {
       __assetFilenameMapCache = await resp.json();
       console.log('🔗 asset_filename_mapping.json loaded');
@@ -93,7 +99,7 @@ const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
     if (mapped !== filename) {
       console.log(`↪️ Mapping ${filename} -> ${mapped}`);
     }
-    const response = await fetch(`/data/${folder}/${mapped}`);
+    const response = await fetch(dataUrl(`${folder}/${mapped}`));
     if (!response.ok) {
       console.error(`Failed to fetch ${folder}/${mapped}: HTTP ${response.status}`);
       return null;
@@ -187,7 +193,7 @@ const loadStockDataFromCSV = async (filename, folder = 'Indian_Stocks') => {
 // Load Asset Timeline for filtering
 const loadAssetTimeline = async () => {
   try {
-    const response = await fetch('/data/Asset_Timeline.csv');
+    const response = await fetch(dataUrl('Asset_Timeline.csv'));
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -1325,7 +1331,16 @@ function App() {
   const [playerName, setPlayerName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // New UI state for improved UX
+  const [activeTab, setActiveTab] = useState('overview');
+  const [gameSpeed, setGameSpeed] = useState(1);
+  const [showToast, setShowToast] = useState(null);
+  const [isLoadingAssets, setIsLoadingAssets] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const multiplayer = useMultiplayer();
+  const [breakdownCache, setBreakdownCache] = useState({});
 
   const currentYear = Math.floor(currentMonth / 12);
   const monthInYear = currentMonth % 12;
@@ -1482,7 +1497,7 @@ useEffect(() => {
 // Handle multiplayer year events
 useEffect(() => {
   if (mode === 'multiplayer' && multiplayer.currentEvent) {
-    setShowEvent(multiplayer.currentEvent);
+    setShowToast(multiplayer.currentEvent);
     handleEvent(multiplayer.currentEvent);
     // Clear the event after handling
     setTimeout(() => {
@@ -1490,6 +1505,23 @@ useEffect(() => {
     }, 100);
   }
 }, [mode, multiplayer.currentEvent]);
+  // Listen for server-sent breakdowns of any player
+  useEffect(() => {
+    if (mode !== 'multiplayer' || !multiplayer.socket) return;
+    const handler = (data) => {
+      if (!data || !data.playerId || !Array.isArray(data.breakdown)) return;
+      setBreakdownCache(prev => ({ ...prev, [data.playerId]: data.breakdown }));
+    };
+    multiplayer.socket.on('player-breakdown', handler);
+    return () => multiplayer.socket.off('player-breakdown', handler);
+  }, [mode, multiplayer.socket]);
+
+  const requestPlayerBreakdown = (playerId) => {
+    if (mode !== 'multiplayer' || !multiplayer.socket || !playerId) return;
+    // Avoid duplicate requests
+    if (breakdownCache[playerId]) return;
+    multiplayer.socket.emit('get-player-breakdown', { playerId });
+  };
 
 // Handle stock transaction updates from multiplayer
 useEffect(() => {
@@ -1565,7 +1597,41 @@ useEffect(() => {
       setPocketCash(data.pocketCash);
     }
 
-    // Update asset portfolio based on category
+    // Handle mutual fund events separately (server uses mf-specific payload)
+    if (data.type === 'buy-mutual-fund') {
+      if (data.pocketCash !== undefined) setPocketCash(data.pocketCash);
+      setInvestments(prev => {
+        const existing = prev.mutualFunds.find(m => m.id === data.mfId);
+        if (existing) {
+          return {
+            ...prev,
+            mutualFunds: prev.mutualFunds.map(m => m.id === data.mfId ? { ...m, units: data.units, avgPrice: data.avgPrice ?? m.avgPrice } : m)
+          };
+        }
+        return {
+          ...prev,
+          mutualFunds: [...prev.mutualFunds, { id: data.mfId, units: data.units, avgPrice: data.avgPrice || getCurrentPrice(data.mfId, currentMonth) }]
+        };
+      });
+      return;
+    }
+    if (data.type === 'sell-mutual-fund') {
+      if (data.pocketCash !== undefined) setPocketCash(data.pocketCash);
+      setInvestments(prev => {
+        const existing = prev.mutualFunds.find(m => m.id === data.mfId);
+        if (!existing) return prev;
+        if (data.units > 0) {
+          return {
+            ...prev,
+            mutualFunds: prev.mutualFunds.map(m => m.id === data.mfId ? { ...m, units: data.units, avgPrice: data.avgPrice ?? m.avgPrice } : m)
+          };
+        }
+        return { ...prev, mutualFunds: prev.mutualFunds.filter(m => m.id !== data.mfId) };
+      });
+      return;
+    }
+
+    // Update generic asset categories
     const { category, assetId, type } = data;
 
     if (type === 'buy-asset') {
@@ -1686,7 +1752,7 @@ const MutualFundCard = ({ fund }) => {
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
       {showGif && (
-        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       {/* Header - align to AssetCard */}
       <div className="flex justify-between items-start mb-3">
@@ -1878,7 +1944,7 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-purple-200 hover:border-purple-400 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''} ${isLoss ? 'bg-red-50' : ''}`}>
       {showGif && (
-        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       {/* Header Section */}
       <div className="flex justify-between items-start mb-3">
@@ -2057,7 +2123,7 @@ const GoldCard = () => {
   return (
     <div className={`relative bg-white p-4 rounded-lg border-2 border-yellow-400 hover:border-yellow-500 transition-colors shadow-md hover:shadow-lg ${isShaking ? 'gv3-shake' : ''}`}>
       {showGif && (
-        <img key={gifKey} src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+        <img key={gifKey} src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
       )}
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
@@ -2212,6 +2278,8 @@ const GoldCard = () => {
   const handleCreateMultiplayerRoom = async (ignoredStartYear, playerName) => {
     console.log(`🏠 Creating multiplayer room (dynamic years)`);
 
+    setIsCreatingRoom(true);
+
     // Mirror solo flow: select categories, compute dynamic start/end by latest end + 5
     const selectedCategories = await selectRandomAssets(null, null);
     const timeline = await loadAssetTimeline();
@@ -2227,6 +2295,7 @@ const GoldCard = () => {
     const gameAssets = await initializeGameAssetsV2(startYear, endYear, selectedCategories, timeline);
     if (!gameAssets) {
       console.error('Failed to load game assets');
+      setIsCreatingRoom(false);
       return;
     }
 
@@ -2246,6 +2315,7 @@ const GoldCard = () => {
     });
 
     setGameStartYear(startYear);
+    setIsCreatingRoom(false);
   };
 
 const getCurrentPrice = (assetId, monthOffset) => {
@@ -2378,7 +2448,7 @@ const calculateNetWorth = () => {
     
     // Gold
     if (investments.gold.grams > 0) {
-      total += investments.gold.grams * getCurrentGoldPrice(currentMonth);
+      total += investments.gold.grams * (getCurrentGoldPrice(currentMonth) / 10);
     }
     
     return Math.round(total);
@@ -2387,21 +2457,24 @@ const calculateNetWorth = () => {
   const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(amount);
 
 const handleEvent = (event) => {
+  // Normalize event delta: ensure losses are negative and gains are positive
+  const delta = event.type === 'loss' ? -Math.abs(event.amount || 0) : Math.abs(event.amount || 0);
+
   if (event.type === 'loss') {
-    if (pocketCash >= Math.abs(event.amount)) {
-      setPocketCash(prev => prev + event.amount);
+    if (pocketCash >= Math.abs(delta)) {
+      setPocketCash(prev => prev + delta);
       setMajorExpenses(prev => [...prev, { 
         month: currentMonth, 
         description: event.message, 
-        amount: event.amount 
+        amount: delta 
       }]);
     } else {
-      setShowEvent({ ...event, needFunds: true });
+      setShowToast({ ...event, needFunds: true });
       setIsPaused(true);
       return;
     }
   } else if (event.type === 'gain') {
-    setPocketCash(prev => prev + event.amount);
+    setPocketCash(prev => prev + delta);
   }
   
   // For solo mode, handle unlock locally
@@ -2472,6 +2545,372 @@ const handleEvent = (event) => {
       }))
     }));
   };
+  // Render investment sections in the order they unlock so new ones appear next to current
+  const renderSectionByKey = (key) => {
+    if (key === 'stocks') {
+      if (!availableInvestments.includes('stocks')) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Stocks</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableStocks.map(stock => (
+              <StockCard key={stock.id} stock={stock} />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'savings') {
+      if (!availableInvestments.includes('savings')) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h3 className="text-xl font-bold text-gray-800 mb-2">Savings Account</h3>
+          <p className="text-sm text-gray-600 mb-4">4% p.a. | Max: ₹50,00,000</p>
+          <div className="mb-4">
+            <div className="text-sm text-gray-600">Balance</div>
+            <div className="text-2xl font-bold text-green-600">{formatCurrency(Math.round(investments.savings.amount))}</div>
+          </div>
+
+          <div className="mb-3">
+            <label className="text-xs text-gray-600 mb-1 block">Amount</label>
+            <input
+              type="number"
+              id="savingsAmount"
+              min="1"
+              placeholder="Enter amount"
+              className="w-full border rounded px-3 py-2 text-sm mb-2"
+            />
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <button
+                  onClick={() => {
+                    const input = document.getElementById('savingsAmount');
+                    const depositAmount = parseInt(input.value) || 0;
+                    const newBalance = investments.savings.amount + depositAmount;
+                    if (depositAmount > 0 && pocketCash >= depositAmount && newBalance <= 5000000) {
+                      setPocketCash(prev => prev - depositAmount);
+                      setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: newBalance } }));
+                      input.value = '';
+                    }
+                  }}
+                  disabled={investments.savings.amount >= 5000000}
+                  className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold"
+                >
+                  Deposit
+                </button>
+                <button
+                  onClick={() => {
+                    const input = document.getElementById('savingsAmount');
+                    const maxDeposit = Math.min(pocketCash, 5000000 - investments.savings.amount);
+                    input.value = Math.floor(maxDeposit);
+                  }}
+                  disabled={pocketCash === 0 || investments.savings.amount >= 5000000}
+                  className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
+                >
+                  MAX
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <button
+                  onClick={() => {
+                    const input = document.getElementById('savingsAmount');
+                    const withdrawAmount = parseInt(input.value) || 0;
+                    if (withdrawAmount > 0 && investments.savings.amount >= withdrawAmount) {
+                      setPocketCash(prev => prev + withdrawAmount);
+                      setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: prev.savings.amount - withdrawAmount } }));
+                      input.value = '';
+                    }
+                  }}
+                  disabled={investments.savings.amount === 0}
+                  className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold"
+                >
+                  Withdraw
+                </button>
+                <button
+                  onClick={() => {
+                    const input = document.getElementById('savingsAmount');
+                    input.value = Math.floor(investments.savings.amount);
+                  }}
+                  disabled={investments.savings.amount === 0}
+                  className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
+                >
+                  ALL
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'mutualFunds') {
+      if (!availableInvestments.includes('mutualFunds') || availableMutualFunds.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Mutual Funds</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableMutualFunds.map(fund => (
+              <MutualFundCard key={fund.id} fund={fund} />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'fixedDeposits') {
+      if (!availableInvestments.includes('fixedDeposits')) return null;
+      return (
+        <div className="bg-white p-6 rounded-2xl shadow-lg border border-blue-100 col-span-full">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-bold text-blue-700">Fixed Deposits</h3>
+            <div className="text-xs text-gray-600">Active {investments.fixedDeposits.length}/3</div>
+          </div>
+
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-xs text-gray-600">Rates:</div>
+            <div className="flex gap-2">
+              {['1Y','2Y','3Y','5Y'].map(k => (
+                <div key={k} className="px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
+                  {k} Rate {getCurrentFDRate(k).toFixed(1)}%
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-gray-600 mb-1 block">Amount (₹)</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1000} step={1000} value={fdAmount}
+                  onChange={(e) => setFdAmount(Math.max(1000, parseInt(e.target.value || '0')))}
+                  className="w-40 px-3 py-2 border border-gray-300 rounded-lg" />
+                <div className="flex gap-2">
+                  {[10000, 25000, 50000].map(v => (
+                    <button key={v} onClick={() => setFdAmount(v)} className={`px-2 py-1 rounded-md text-xs border ${fdAmount === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'}`}>₹{(v/1000)}k</button>
+                  ))}
+                </div>
+              </div>
+              <div className="text-xs text-gray-600 mt-1">Available: {formatCurrency(pocketCash)}</div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { m: 12, k: '1Y' },
+                { m: 24, k: '2Y' },
+                { m: 36, k: '3Y' },
+                { m: 60, k: '5Y' }
+              ].map(opt => (
+                <button key={opt.m} onClick={() => {
+                  if (pocketCash >= fdAmount && investments.fixedDeposits.length < 3) {
+                    setPocketCash(prev => prev - fdAmount);
+                    setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: fdAmount, duration: opt.m, roi: getCurrentFDRate(opt.k), monthsElapsed: 0, profit: 0 }] }));
+                  }
+                }} disabled={pocketCash < fdAmount || investments.fixedDeposits.length >= 3}
+                className="px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white">
+                  {opt.k}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {investments.fixedDeposits.length > 0 && (
+            <div className="space-y-3 mt-5">
+              {investments.fixedDeposits.map((fd, idx) => {
+                const isMatured = fd.monthsElapsed >= fd.duration;
+                const remainingMonths = Math.max(0, fd.duration - fd.monthsElapsed);
+                const progressPct = Math.min(100, Math.round((fd.monthsElapsed / fd.duration) * 100));
+                const radius = 20;
+                const circumference = 2 * Math.PI * radius;
+                const dash = (progressPct / 100) * circumference;
+                return (
+                  <div key={idx} className="p-3 rounded-xl border border-blue-200 bg-white shadow-md">
+                    <div className="flex items-center gap-3">
+                      <svg width="52" height="52" viewBox="0 0 52 52" className="shrink-0">
+                        <circle cx="26" cy="26" r={radius} fill="none" stroke="#e0e7ff" strokeWidth="6" />
+                        <circle cx="26" cy="26" r={radius} fill="none" stroke="#3b82f6" strokeWidth="6" strokeLinecap="round" strokeDasharray={`${dash} ${circumference - dash}`} transform="rotate(-90 26 26)" />
+                        <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fontSize="10" fill="#1f2937">{progressPct}%</text>
+                      </svg>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <div className="font-bold text-gray-800">₹{fd.amount.toLocaleString()}</div>
+                          <div className="text-sm font-semibold text-green-600">₹{Math.round(fd.profit).toLocaleString()}</div>
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1 flex justify-between">
+                          <span>{fd.monthsElapsed}/{fd.duration}m</span>
+                          <span className={isMatured ? 'text-green-600 font-semibold' : 'text-orange-600 font-semibold'}>
+                            {isMatured ? 'Matured' : `${remainingMonths} Months left`}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex gap-2">
+                          <button onClick={() => (isMatured ? withdrawFD(idx) : setFdConfirm({ index: idx, isMatured }))} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${isMatured ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}>
+                            {isMatured ? 'Withdraw' : 'Early Withdraw'}
+                          </button>
+                          <span className="px-2 py-1 rounded-md text-[10px] bg-blue-50 text-blue-700 border border-blue-200">ROI {fd.roi?.toFixed ? fd.roi.toFixed(1) : fd.roi}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (key === 'gold') {
+      if (!availableInvestments.includes('gold')) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <GoldCard />
+        </div>
+      );
+    }
+
+    if (key === 'indexFunds') {
+      if (!availableInvestments.includes('indexFunds') || availableIndexFunds.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Index Funds</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableIndexFunds.map(fund => {
+              const currentAmount = assetAmounts[fund.id] || 1;
+              const setCurrentAmount = (value) => {
+                setAssetAmounts(prev => ({ ...prev, [fund.id]: value }));
+              };
+              return (
+                <AssetCard
+                  key={fund.id}
+                  asset={fund}
+                  category="indexFunds"
+                  categoryDisplayName="Index Fund"
+                  amount={currentAmount}
+                  setAmount={setCurrentAmount}
+                />
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'commodities') {
+      if (!availableInvestments.includes('commodities') || availableCommodities.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Commodities</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableCommodities.map(commodity => {
+              const currentAmount = assetAmounts[commodity.id] || 1;
+              const setCurrentAmount = (value) => {
+                setAssetAmounts(prev => ({ ...prev, [commodity.id]: value }));
+              };
+              return (
+                <AssetCard
+                  key={commodity.id}
+                  asset={commodity}
+                  category="commodities"
+                  categoryDisplayName="Commodity"
+                  amount={currentAmount}
+                  setAmount={setCurrentAmount}
+                />
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'reit') {
+      if (!availableInvestments.includes('reit') || availableREITs.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">REITs</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableREITs
+              .filter(reit => typeof gameStartYear === 'number' ? reit.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
+              .map(reit => {
+                const currentAmount = assetAmounts[reit.id] || 1;
+                const setCurrentAmount = (value) => {
+                  setAssetAmounts(prev => ({ ...prev, [reit.id]: value }));
+                };
+                return (
+                  <AssetCard
+                    key={reit.id}
+                    asset={reit}
+                    category="reit"
+                    categoryDisplayName="REIT"
+                    amount={currentAmount}
+                    setAmount={setCurrentAmount}
+                  />
+                );
+              })}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'crypto') {
+      if (!availableInvestments.includes('crypto') || availableCrypto.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Cryptocurrency</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableCrypto
+              .filter(crypto => typeof gameStartYear === 'number' ? crypto.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
+              .map(crypto => {
+                const currentAmount = assetAmounts[crypto.id] || 1;
+                const setCurrentAmount = (value) => {
+                  setAssetAmounts(prev => ({ ...prev, [crypto.id]: value }));
+                };
+                return (
+                  <AssetCard
+                    key={crypto.id}
+                    asset={crypto}
+                    category="crypto"
+                    categoryDisplayName="Crypto"
+                    amount={currentAmount}
+                    setAmount={setCurrentAmount}
+                  />
+                );
+              })}
+          </div>
+        </div>
+      );
+    }
+
+    if (key === 'forex') {
+      if (!availableInvestments.includes('forex') || availableForex.length === 0) return null;
+      return (
+        <div className="bg-white p-6 rounded-lg shadow col-span-full">
+          <h3 className="text-xl font-bold text-gray-800 mb-4">Foreign Exchange</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+            {availableForex.map(fx => {
+              const currentAmount = assetAmounts[fx.id] || 1;
+              const setCurrentAmount = (value) => {
+                setAssetAmounts(prev => ({ ...prev, [fx.id]: value }));
+              };
+              return (
+                <AssetCard
+                  key={fx.id}
+                  asset={fx}
+                  category="forex"
+                  categoryDisplayName="Forex"
+                  amount={currentAmount}
+                  setAmount={setCurrentAmount}
+                />
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  };
 
 useEffect(() => {
     if (mode === 'solo') {
@@ -2488,12 +2927,12 @@ useEffect(() => {
           // Check for year events (use window.gameYearEvents set in startGame)
           if (month === 0 && window.gameYearEvents && window.gameYearEvents[year]) {
             const yearEvent = window.gameYearEvents[year];
-            setShowEvent(yearEvent);
+            setShowToast(yearEvent);
             handleEvent(yearEvent);
           }
           
           if (nextMonth >= 240) setGameState('gameOver');
-        }, MONTH_DURATION);
+        }, MONTH_DURATION / gameSpeed);
         return () => { if (timerRef.current) clearTimeout(timerRef.current); };
       }
     } else if (mode === 'multiplayer' && gameState === 'playing') {
@@ -2506,7 +2945,7 @@ useEffect(() => {
       });
     
     }
-  }, [gameState, currentMonth, isPaused, mode]);
+  }, [gameState, currentMonth, isPaused, mode, gameSpeed]);
 
   useEffect(() => {
     if (mode === 'multiplayer' && multiplayer.socket && gameState === 'playing') {
@@ -2528,24 +2967,26 @@ useEffect(() => {
       setAvailableInvestments(availableInvestments);
     }
     
-    // Show the event popup
+    // Show the event toast (non-intrusive notification)
     if (event) {
-      setShowEvent(event);
-      setIsPaused(true); // Pause to show event
-      
-      // Handle gain/loss events
+      setShowToast(event);
+      // Don't pause for non-critical events
+
+      // Handle gain/loss events with normalized delta
+      const delta = event.type === 'loss' ? -Math.abs(event.amount || 0) : Math.abs(event.amount || 0);
       if (event.type === 'gain') {
-        setPocketCash(prev => prev + event.amount);
+        setPocketCash(prev => prev + delta);
       } else if (event.type === 'loss') {
-        if (pocketCash >= Math.abs(event.amount)) {
-          setPocketCash(prev => prev + event.amount);
-          setMajorExpenses(prev => [...prev, { 
-            month: currentMonth, 
-            description: event.message, 
-            amount: event.amount 
+        if (pocketCash >= Math.abs(delta)) {
+          setPocketCash(prev => prev + delta);
+          setMajorExpenses(prev => [...prev, {
+            month: currentMonth,
+            description: event.message,
+            amount: delta
           }]);
         } else {
-          setShowEvent({ ...event, needFunds: true });
+          setShowToast({ ...event, needFunds: true });
+          setIsPaused(true); // Only pause for insufficient funds
         }
       }
     }
@@ -2561,9 +3002,13 @@ useEffect(() => {
 
 const startGame = async () => {
   console.log('\n🎮 Starting Game...\n');
-  
+
+  // Show loading screen
+  setIsLoadingAssets(true);
+  setLoadingMessage('Preparing game assets...');
+
   let stocks, startYear, randomAssets, gameAssets;
-  
+
   if (mode === 'multiplayer') {
     // Multiplayer: Use data from server
     stocks = multiplayer.availableStocks || [];
@@ -2592,11 +3037,13 @@ const startGame = async () => {
     // Solo Mode: NEW APPROACH - Select assets first, then determine year range
 
     console.log('📅 Step 1: Selecting asset categories first...');
+    setLoadingMessage('Selecting asset categories...');
 
     // Step 1: Select 6 random categories (+ SAC and FD always)
     const selectedCategories = await selectRandomAssets(null, null); // No year needed yet
 
     // Step 2: Determine the latest INTRODUCTION year with progressive categories (crypto/reit use latest sub-asset start)
+    setLoadingMessage('Loading asset timeline...');
     const timeline = await loadAssetTimeline();
     const latestIntroYear = await findLatestIntroductionYear(selectedCategories, timeline);
 
@@ -2616,10 +3063,12 @@ const startGame = async () => {
     console.log(`📅 Calculated game period: ${startYear} to ${endYear} (${endYear - startYear} years, buffer: ${BUFFER_YEARS} years)`);
 
     // Step 4: Load game assets with the calculated years
+    setLoadingMessage('Loading historical data for selected assets...');
     gameAssets = await initializeGameAssetsV2(startYear, endYear, selectedCategories, timeline);
     
     if (!gameAssets) {
       console.error('❌ Failed to initialize game assets');
+      setIsLoadingAssets(false);
       alert('Failed to load game data. Please refresh and try again.');
       return;
     }
@@ -2639,6 +3088,7 @@ const startGame = async () => {
 
     if (totalTradables === 0) {
       console.error('❌ No tradable assets available for this configuration');
+      setIsLoadingAssets(false);
       alert('No tradable assets available for this configuration. Please try again.');
       return;
     }
@@ -2704,7 +3154,10 @@ const startGame = async () => {
   
   setMajorExpenses([]);
   setNetworthHistory([{ month: 0, networth: 50000 }]);
-  
+
+  // Hide loading screen
+  setIsLoadingAssets(false);
+
   console.log('✅ Game started successfully!\n');
 };
 
@@ -2954,7 +3407,7 @@ const StockCard = ({ stock }) => {
     return (
       <div className="relative bg-white p-4 rounded-lg border-2 border-blue-200 shadow-md hover:shadow-lg transition-shadow">
         {showGif && (
-          <img src="/Profit.gif" alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
+          <img src={assetUrl('Profit.gif')} alt="Celebration" className="absolute top-2 right-2 w-12 h-12 drop-shadow pointer-events-none" />
         )}
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
@@ -3078,7 +3531,7 @@ const StockCard = ({ stock }) => {
       <div className="min-h-screen bg-gradient-to-br from-orange-500 via-white to-green-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full border-4 border-orange-600">
           <div className="text-center mb-8">
-            <img src="/Rupee_logo.png" alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
+            <img src={assetUrl('Rupee_logo.png')} alt="Game Logo" className="mx-auto mb-4 w-24 h-24 object-contain drop-shadow" />
             <h1 className="text-4xl font-bold text-orange-600 mb-2">Build Your Dhan</h1>
             <p className="text-gray-600">Stock Trading Challenge</p>
           </div>
@@ -3114,19 +3567,40 @@ const StockCard = ({ stock }) => {
         <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
           <h2 className="text-3xl font-bold text-orange-600 mb-6 text-center">Create Room</h2>
           {multiplayer.error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-800"><AlertCircle className="w-5 h-5" />{multiplayer.error}</div>}
-          <div className="space-y-4">
-            <div><label className="block text-sm font-medium text-gray-700 mb-2">Your Name</label><input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Enter name" className="w-full px-4 py-3 border border-gray-300 rounded-lg" maxLength={20} /></div>
-            <button onClick={async () => {
+
+          {isCreatingRoom ? (
+            <div className="text-center py-8">
+              <Clock className="w-12 h-12 text-orange-600 mx-auto animate-spin mb-4" />
+              <h3 className="text-lg font-semibold text-gray-800 mb-2">Creating Room...</h3>
+              <p className="text-gray-600 text-sm mb-4">Loading game assets and generating room code</p>
+              <div className="mt-4 p-4 bg-amber-50 rounded-lg border border-amber-200">
+                <p className="text-xs text-amber-800">
+                  <strong>First time or after inactivity?</strong> Server may take 1-2 minutes to boot up. Please wait...
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div><label className="block text-sm font-medium text-gray-700 mb-2">Your Name</label><input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Enter name" className="w-full px-4 py-3 border border-gray-300 rounded-lg" maxLength={20} /></div>
+              <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs text-blue-800">
+                  <strong>Note:</strong> If room code doesn't appear within 2 minutes, the server may be booting up. Please wait and try again.
+                </p>
+              </div>
+              <button onClick={async () => {
   if (playerName.trim()) {
     const MIN_YEAR = 1990;
     const MAX_YEAR = 2005;
     const startYear = MIN_YEAR + Math.floor(Math.random() * (MAX_YEAR - MIN_YEAR + 1));
-    
+
     // Use the same initialization function as solo mode
     await handleCreateMultiplayerRoom(startYear, playerName);
-    setScreen('lobby');  } }} disabled={!playerName.trim()} className="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white py-4 rounded-lg text-lg font-semibold">Create</button>
-            <button onClick={() => setScreen('multiplayer-menu')} className="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 py-3 rounded-lg font-semibold">Back</button>
-          </div>
+    setScreen('lobby');  } }} disabled={!playerName.trim() || isCreatingRoom} className="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white py-4 rounded-lg text-lg font-semibold">
+                {isCreatingRoom ? 'Creating...' : 'Create'}
+              </button>
+              <button onClick={() => setScreen('multiplayer-menu')} disabled={isCreatingRoom} className="w-full bg-gray-200 hover:bg-gray-300 disabled:bg-gray-300 text-gray-700 py-3 rounded-lg font-semibold">Back</button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -3192,6 +3666,28 @@ const StockCard = ({ stock }) => {
     );
   }
 
+  // Loading screen for asset initialization
+  if (isLoadingAssets) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-100 to-green-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
+          <div className="text-center">
+            <div className="mb-6">
+              <Clock className="w-16 h-16 text-orange-600 mx-auto animate-spin" />
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Getting Ready...</h2>
+            <p className="text-gray-600 mb-2">{loadingMessage}</p>
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <p className="text-sm text-blue-800">
+                <strong>Please wait:</strong> Server is loading historical data for your game. This may take 1-2 minutes on first load or after inactivity.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (screen === 'instructions') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-100 to-green-100 flex items-center justify-center p-4">
@@ -3215,286 +3711,148 @@ const StockCard = ({ stock }) => {
     const growth = ((networth / 50000 - 1) * 100).toFixed(1);
 
     return (
-      <div className="min-h-screen bg-gray-50 p-4">
-        <div className="bg-gradient-to-r from-orange-600 to-green-600 text-white p-6 rounded-lg shadow-lg mb-4">
-          <div className="flex justify-between items-center flex-wrap gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-2"><Calendar className="w-5 h-5" /><span className="text-xl font-bold">Year {currentYear}, Month {monthInYear + 1}</span></div>
-              <div className="text-sm opacity-90">{currentMonth}/240</div>
-              {gameStartYear && (
-                <div className="text-xs opacity-75 mt-1">
-                  Playing: {gameStartYear + currentYear} ({gameStartYear}-{gameStartYear + 19})
+      <div className="min-h-screen bg-gray-50 pb-32">
+        {/* Improved Compact Header */}
+        <div className="sticky top-0 z-30 bg-gradient-to-r from-orange-600 to-green-600 text-white shadow-lg">
+          <div className="w-full px-4 sm:px-10 md:px-10 lg:px-8 py-3">
+            <div className="flex justify-between items-start flex-wrap gap-3">
+              <div className="flex items-start gap-6">
+                <div className="flex items-start gap-4">
+                  <Calendar className="w-10 h-10 mt-5" />
+                  
+                  <div>
+                    <div className="text-xl font-bold mt-4">Year {currentYear}, Month {monthInYear + 1}</div>
+                    {gameStartYear && (
+                      <div className="text-sm opacity-75">
+                        {gameStartYear + currentYear}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-              {mode === 'multiplayer' && <div className="text-sm opacity-90">Room: {multiplayer.roomCode}</div>}
-            </div>
-            <div className="flex gap-6">
-              <div><div className="text-sm opacity-90">Cash</div><div className="text-2xl font-bold">{formatCurrency(pocketCash)}</div></div>
-              <div><div className="text-sm opacity-90">Net Worth</div><div className="text-2xl font-bold">{formatCurrency(networth)}</div><div className="text-sm opacity-90">+{growth}%</div></div>
+              </div>
+
+              <div className="flex items-start gap-12">
+                <div className="text-right px-5 py-1">
+                  <div className="text-lg opacity-100 font-bold mt-0.5">Pocket Cash</div>
+                  <div className={`text-lg font-bold ${pocketCash < 0 ? 'text-red-300 animate-pulse' : ''}`}>
+                    {formatCurrency(pocketCash)}
+                  </div>
+                </div>
+                <div className="text-right relative group cursor-pointer hover:bg-white/10 px-5 py-1 rounded-lg transition-all duration-200">
+                  <div className="text-lg opacity-100 font-bold">
+                    Net Worth
+                  </div>
+                  <div className="text-lg font-bold">{formatCurrency(networth)}</div>
+                  <div className={`text-xs font-semibold ${parseFloat(growth) >= 0 ? 'text-green-200' : 'text-red-200'}`}>
+                    {parseFloat(growth) >= 0 ? '+' : ''}{growth}%
+                  </div>
+
+                  {/* Portfolio Overlay on Hover */}
+                  <div className="absolute top-full right-0 mt-2 w-80 sm:w-96 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-300 z-50 transform scale-95 group-hover:scale-100 shadow-2xl">
+                    <PortfolioOverview
+                      investments={investments}
+                      pocketCash={pocketCash}
+                      networth={networth}
+                      formatCurrency={formatCurrency}
+                      getCurrentPrice={getCurrentPrice}
+                      getCurrentGoldPrice={getCurrentGoldPrice}
+                      currentMonth={currentMonth}
+                      goldData={goldData}
+                      availableStocks={availableStocks}
+                      availableMutualFunds={availableMutualFunds}
+                      availableIndexFunds={availableIndexFunds}
+                      availableCommodities={availableCommodities}
+                      availableREITs={availableREITs}
+                      availableCrypto={availableCrypto}
+                      availableForex={availableForex}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        {mode === 'multiplayer' && multiplayer.leaderboard.length > 0 && (
-          <div className="bg-white p-6 rounded-lg shadow mb-4">
-            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><Trophy className="w-5 h-5 text-yellow-600" />Leaderboard</h3>
-            <div className="space-y-2">
-              {multiplayer.leaderboard.map((player, index) => (
-                <div key={player.id} className={`flex items-center justify-between p-3 rounded-lg ${player.id === multiplayer.myPlayerId ? 'bg-orange-100 border-2 border-orange-400' : 'bg-gray-50'}`}>
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold ${index === 0 ? 'bg-yellow-500' : index === 1 ? 'bg-gray-400' : index === 2 ? 'bg-orange-400' : 'bg-gray-300'}`}>{index + 1}</div>
-                    <div className="font-bold text-gray-800">{player.name}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-bold text-lg">{formatCurrency(player.netWorth)}</div>
-                    <div className={`text-sm ${player.growth >= 0 ? 'text-green-600' : 'text-red-600'}`}>{player.growth >= 0 ? '+' : ''}{player.growth}%</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {showEvent && (
+        {/* Centered Event Modal (like original game) */}
+        {showToast && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl p-8 max-w-md w-full shadow-2xl">
+            <div className="bg-white rounded-xl p-8 max-w-md w-full shadow-2xl animate-fadeIn">
               <div className="text-center mb-6">
-                {showEvent.type === 'gain' && <div className="text-6xl mb-4">🎉</div>}
-                {showEvent.type === 'loss' && <div className="text-6xl mb-4">😰</div>}
-                {showEvent.type === 'unlock' && <div className="text-6xl mb-4">🔓</div>}
-                <h3 className="text-2xl font-bold text-gray-800 mb-2">{showEvent.type === 'gain' ? 'Good News!' : showEvent.type === 'loss' ? 'Expense' : 'Unlocked!'}</h3>
-                <p className="text-gray-600">{showEvent.message}</p>
-                {showEvent.amount && <div className={`text-3xl font-bold mt-4 ${showEvent.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(Math.abs(showEvent.amount))}</div>}
-              </div>
-              <button onClick={() => { setShowEvent(null); setIsPaused(false); }} className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 rounded-lg font-semibold">Continue</button>
-            </div>
-          </div>
-        )}
-
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
-          {availableInvestments.includes('stocks') && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Stocks</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {availableStocks.map(stock => (
-                  <StockCard key={stock.id} stock={stock} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {availableInvestments.includes('savings') && (
-            <div className="bg-white p-6 rounded-lg shadow">
-              <h3 className="text-xl font-bold text-gray-800 mb-2">Savings Account</h3>
-              <p className="text-sm text-gray-600 mb-4">4% p.a. | Max: ₹50,00,000</p>
-              <div className="mb-4">
-                <div className="text-sm text-gray-600">Balance</div>
-                <div className="text-2xl font-bold text-green-600">{formatCurrency(Math.round(investments.savings.amount))}</div>
-              </div>
-
-              {/* Single Amount Input */}
-              <div className="mb-3">
-                <label className="text-xs text-gray-600 mb-1 block">Amount</label>
-                <input
-                  type="number"
-                  id="savingsAmount"
-                  min="1"
-                  placeholder="Enter amount"
-                  className="w-full border rounded px-3 py-2 text-sm mb-2"
-                />
-
-                {/* Deposit and Withdraw Buttons with MAX/ALL */}
-                <div className="grid grid-cols-2 gap-2">
-                  {/* Deposit Section */}
-                  <div className="space-y-1">
-                    <button
-                      onClick={() => {
-                        const input = document.getElementById('savingsAmount');
-                        const depositAmount = parseInt(input.value) || 0;
-                        const newBalance = investments.savings.amount + depositAmount;
-                        if (depositAmount > 0 && pocketCash >= depositAmount && newBalance <= 5000000) {
-                          setPocketCash(prev => prev - depositAmount);
-                          setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: newBalance } }));
-                          input.value = '';
-                        }
-                      }}
-                      disabled={investments.savings.amount >= 5000000}
-                      className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold"
-                    >
-                      Deposit
-                    </button>
-                    <button
-                      onClick={() => {
-                        const input = document.getElementById('savingsAmount');
-                        const maxDeposit = Math.min(pocketCash, 5000000 - investments.savings.amount);
-                        input.value = Math.floor(maxDeposit);
-                      }}
-                      disabled={pocketCash === 0 || investments.savings.amount >= 5000000}
-                      className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
-                    >
-                      MAX
-                    </button>
-                  </div>
-
-                  {/* Withdraw Section */}
-                  <div className="space-y-1">
-                    <button
-                      onClick={() => {
-                        const input = document.getElementById('savingsAmount');
-                        const withdrawAmount = parseInt(input.value) || 0;
-                        if (withdrawAmount > 0 && investments.savings.amount >= withdrawAmount) {
-                          setPocketCash(prev => prev + withdrawAmount);
-                          setInvestments(prev => ({ ...prev, savings: { ...prev.savings, amount: prev.savings.amount - withdrawAmount } }));
-                          input.value = '';
-                        }
-                      }}
-                      disabled={investments.savings.amount === 0}
-                      className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold"
-                    >
-                      Withdraw
-                    </button>
-                    <button
-                      onClick={() => {
-                        const input = document.getElementById('savingsAmount');
-                        input.value = Math.floor(investments.savings.amount);
-                      }}
-                      disabled={investments.savings.amount === 0}
-                      className="w-full bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400 text-white py-1 rounded text-xs font-semibold"
-                    >
-                      ALL
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-        {availableInvestments.includes('mutualFunds') && availableMutualFunds.length > 0 && (
-          <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-            <h3 className="text-xl font-bold text-gray-800 mb-4">Mutual Funds</h3>
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {availableMutualFunds.map(fund => (
-                <MutualFundCard key={fund.id} fund={fund} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {availableInvestments.includes('fixedDeposits') && (
-              <div className="bg-white p-6 rounded-2xl shadow-lg border border-blue-100">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xl font-bold text-blue-700">Fixed Deposits</h3>
-                  <div className="text-xs text-gray-600">Active {investments.fixedDeposits.length}/3</div>
-                </div>
-
-                {/* Helper + quick reference rates */}
-                <div className="flex items-center justify-between mb-4">
-                  <div className="text-xs text-gray-600">Current FD rate.</div>
-                  <div className="flex gap-2">
-                    {['1Y','2Y','3Y','5Y'].map(k => (
-                      <div key={k} className="px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
-                        {k} Rate {getCurrentFDRate(k).toFixed(1)}%
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Active FDs (moved below controls so new ones appear at bottom) */}
-                {/* Placeholder; list moved below */}
-                {/* previously rendered here */}
-                
-                
-
-                {/* Active FDs now below controls */}
-
-                {/* Custom amount + quick chips + tenure buttons */}
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs text-gray-600 mb-1 block">Amount (₹)</label>
-                    <div className="flex items-center gap-2">
-                      <input type="number" min={1000} step={1000} value={fdAmount}
-                        onChange={(e) => setFdAmount(Math.max(1000, parseInt(e.target.value || '0')))}
-                        className="w-40 px-3 py-2 border border-gray-300 rounded-lg" />
-                      <div className="flex gap-2">
-                        {[10000, 25000, 50000].map(v => (
-                          <button key={v} onClick={() => setFdAmount(v)} className={`px-2 py-1 rounded-md text-xs border ${fdAmount === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'}`}>₹{(v/1000)}k</button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="text-xs text-gray-600 mt-1">Available: {formatCurrency(pocketCash)}</div>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {[
-                      { m: 12, k: '1Y' },
-                      { m: 24, k: '2Y' },
-                      { m: 36, k: '3Y' },
-                      { m: 60, k: '5Y' }
-                    ].map(opt => (
-                      <button key={opt.m} onClick={() => {
-                        if (pocketCash >= fdAmount && investments.fixedDeposits.length < 3) {
-                          setPocketCash(prev => prev - fdAmount);
-                          setInvestments(prev => ({ ...prev, fixedDeposits: [...prev.fixedDeposits, { amount: fdAmount, duration: opt.m, roi: getCurrentFDRate(opt.k), monthsElapsed: 0, profit: 0 }] }));
-                        }
-                      }} disabled={pocketCash < fdAmount || investments.fixedDeposits.length >= 3}
-                      className="px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white">
-                        {opt.k}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Active FDs list directly below controls within the same card */}
-                {investments.fixedDeposits.length > 0 && (
-                  <div className="space-y-3 mt-5">
-                    {investments.fixedDeposits.map((fd, idx) => {
-                      const isMatured = fd.monthsElapsed >= fd.duration;
-                      const remainingMonths = Math.max(0, fd.duration - fd.monthsElapsed);
-                      const progressPct = Math.min(100, Math.round((fd.monthsElapsed / fd.duration) * 100));
-                      const radius = 20;
-                      const circumference = 2 * Math.PI * radius;
-                      const dash = (progressPct / 100) * circumference;
-                      return (
-                        <div key={idx} className="p-3 rounded-xl border border-blue-200 bg-white shadow-md">
-                          <div className="flex items-center gap-3">
-                            <svg width="52" height="52" viewBox="0 0 52 52" className="shrink-0">
-                              <circle cx="26" cy="26" r={radius} fill="none" stroke="#e0e7ff" strokeWidth="6" />
-                              <circle cx="26" cy="26" r={radius} fill="none" stroke="#3b82f6" strokeWidth="6" strokeLinecap="round" strokeDasharray={`${dash} ${circumference - dash}`} transform="rotate(-90 26 26)" />
-                              <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fontSize="10" fill="#1f2937">{progressPct}%</text>
-                            </svg>
-                            <div className="flex-1">
-                              <div className="flex items-center justify-between">
-                                <div className="font-bold text-gray-800">₹{fd.amount.toLocaleString()}</div>
-                                <div className="text-sm font-semibold text-green-600">₹{Math.round(fd.profit).toLocaleString()}</div>
-                              </div>
-                              <div className="text-xs text-gray-600 mt-1 flex justify-between">
-                                <span>{fd.monthsElapsed}/{fd.duration}m</span>
-                                <span className={isMatured ? 'text-green-600 font-semibold' : 'text-orange-600 font-semibold'}>
-                                  {isMatured ? 'Matured' : `${remainingMonths} Months left`}
-                                </span>
-                              </div>
-                              <div className="mt-2 flex gap-2">
-                                <button onClick={() => (isMatured ? withdrawFD(idx) : setFdConfirm({ index: idx, isMatured }))} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${isMatured ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}>
-                                  {isMatured ? 'Withdraw' : 'Early Withdraw'}
-                                </button>
-                                <span className="px-2 py-1 rounded-md text-[10px] bg-blue-50 text-blue-700 border border-blue-200">ROI {fd.roi?.toFixed ? fd.roi.toFixed(1) : fd.roi}%</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                {showToast.type === 'gain' && <div className="text-6xl mb-4">🎉</div>}
+                {showToast.type === 'loss' && <div className="text-6xl mb-4">😰</div>}
+                {showToast.type === 'unlock' && <div className="text-6xl mb-4">🔓</div>}
+                <h3 className="text-2xl font-bold text-gray-800 mb-2">
+                  {showToast.type === 'gain' ? 'Good News!' : showToast.type === 'loss' ? 'Expense' : 'Unlocked!'}
+                </h3>
+                <p className="text-gray-600">{showToast.message}</p>
+                {showToast.amount && (
+                  <div className={`text-3xl font-bold mt-4 ${showToast.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {formatCurrency(Math.abs(showToast.amount))}
                   </div>
                 )}
+              </div>
+              <button
+                onClick={() => {
+                  setShowToast(null);
+                  setIsPaused(false);
+                }}
+                className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 rounded-lg font-semibold"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
 
+        {/* Main Content - Full Width Layout */}
+        <div className="w-full px-3 sm:px-4 md:px-6 lg:px-8 py-2">
+          {/* Investment Cards (Main Area) */}
+          <div className="w-full max-w-[2000px] mx-auto">
+            {/* Multiplayer Leaderboard - Compact */}
+            {mode === 'multiplayer' && multiplayer.leaderboard.length > 0 && (
+              <div className="bg-white p-3 rounded-lg shadow mb-2">
+                <h3 className="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2">
+                  <Trophy className="w-4 h-4 text-yellow-600" />
+                  Leaderboard
+                </h3>
+                <div className="space-y-1">
+                  {multiplayer.leaderboard.slice(0, 3).map((player, index) => (
+                    <div
+                      key={player.id}
+                      className={`flex items-center justify-between p-2 rounded text-xs ${
+                        player.id === multiplayer.myPlayerId
+                          ? 'bg-orange-100'
+                          : 'bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold ${
+                          index === 0 ? 'bg-yellow-500' :
+                          index === 1 ? 'bg-gray-400' :
+                          'bg-orange-400'
+                        }`}>
+                          {index + 1}
+                        </div>
+                        <div className="font-bold text-gray-800">{player.name}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold">{formatCurrency(player.netWorth)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            {/* FD confirmation modal (non-expanding) */}
-
-            
-            
-            
+            {/* Investment Sections - Responsive Grid (ordered by unlock sequence) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+              {availableInvestments.map(key => (
+                <React.Fragment key={key}>
+                  {renderSectionByKey(key)}
+                </React.Fragment>
+              ))}
+            </div>
+            {/* FD confirmation modal (global) */}
             {fdConfirm && (() => {
               const fd = investments.fixedDeposits[fdConfirm.index];
               const isMatured = fdConfirm.isMatured;
@@ -3530,144 +3888,11 @@ const StockCard = ({ stock }) => {
               </div>
               );
             })()}
+          </div>
+        </div>
 
-            {availableInvestments.includes('gold') && (
-              <div className="bg-white p-6 rounded-lg shadow">
-                <h3 className="text-xl font-bold text-gray-800 mb-4">Gold</h3>
-                <GoldCard />
-              </div>
-            )}
-
-          {/* ----------Index Funds Section ------*/}
-          {availableInvestments.includes('indexFunds') && availableIndexFunds.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Index Funds</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableIndexFunds.map(fund => {
-                  const currentAmount = assetAmounts[fund.id] || 1;
-                  const setCurrentAmount = (value) => {
-                    setAssetAmounts(prev => ({ ...prev, [fund.id]: value }));
-                  };
-                  return (
-                    <AssetCard
-                      key={fund.id}
-                      asset={fund}
-                      category="indexFunds"
-                      categoryDisplayName="Index Fund"
-                      amount={currentAmount}
-                      setAmount={setCurrentAmount}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Commodities Section */}
-          {availableInvestments.includes('commodities') && availableCommodities.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Commodities</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableCommodities.map(commodity => {
-                  const currentAmount = assetAmounts[commodity.id] || 1;
-                  const setCurrentAmount = (value) => {
-                    setAssetAmounts(prev => ({ ...prev, [commodity.id]: value }));
-                  };
-                  return (
-                    <AssetCard
-                      key={commodity.id}
-                      asset={commodity}
-                      category="commodities"
-                      categoryDisplayName="Commodity"
-                      amount={currentAmount}
-                      setAmount={setCurrentAmount}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* REITs Section */}
-          {availableInvestments.includes('reit') && availableREITs.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">REITs</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableREITs
-                  .filter(reit => typeof gameStartYear === 'number' ? reit.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
-                  .map(reit => {
-                  const currentAmount = assetAmounts[reit.id] || 1;
-                  const setCurrentAmount = (value) => {
-                    setAssetAmounts(prev => ({ ...prev, [reit.id]: value }));
-                  };
-                  return (
-                    <AssetCard
-                      key={reit.id}
-                      asset={reit}
-                      category="reit"
-                      categoryDisplayName="REIT"
-                      amount={currentAmount}
-                      setAmount={setCurrentAmount}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Crypto Section */}
-          {availableInvestments.includes('crypto') && availableCrypto.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Cryptocurrency</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableCrypto
-                  .filter(crypto => typeof gameStartYear === 'number' ? crypto.startYear <= (gameStartYear + Math.floor(currentMonth / 12)) : true)
-                  .map(crypto => {
-                  const currentAmount = assetAmounts[crypto.id] || 1;
-                  const setCurrentAmount = (value) => {
-                    setAssetAmounts(prev => ({ ...prev, [crypto.id]: value }));
-                  };
-                  return (
-                    <AssetCard
-                      key={crypto.id}
-                      asset={crypto}
-                      category="crypto"
-                      categoryDisplayName="Crypto"
-                      amount={currentAmount}
-                      setAmount={setCurrentAmount}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Forex Section */}
-          {availableInvestments.includes('forex') && availableForex.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow md:col-span-2 lg:col-span-3">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Foreign Exchange</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {availableForex.map(fx => {
-                  const currentAmount = assetAmounts[fx.id] || 1;
-                  const setCurrentAmount = (value) => {
-                    setAssetAmounts(prev => ({ ...prev, [fx.id]: value }));
-                  };
-                  return (
-                    <AssetCard
-                      key={fx.id}
-                      asset={fx}
-                      category="forex"
-                      categoryDisplayName="Forex"
-                      amount={currentAmount}
-                      setAmount={setCurrentAmount}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        
-      </div>
+        {/* Fixed Game Control Bar at Bottom - Simple Progress Only */}
+        <GameControlBar currentMonth={currentMonth} />
       </div>
     );
   }
@@ -3691,19 +3916,82 @@ const StockCard = ({ stock }) => {
           </div>
           {mode === 'multiplayer' && multiplayer.leaderboard.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4 text-center">Final Leaderboard</h3>
-              <div className="space-y-2">
-                {multiplayer.leaderboard.slice(0, 5).map((player, index) => (
-                  <div key={player.id} className={`flex items-center justify-between p-4 rounded-lg ${player.id === multiplayer.myPlayerId ? 'bg-orange-100' : 'bg-gray-50'}`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold ${index === 0 ? 'bg-yellow-500' : index === 1 ? 'bg-gray-400' : index === 2 ? 'bg-orange-400' : 'bg-gray-300'}`}>{index + 1}</div>
-                      <div className="font-bold text-gray-800">{player.name}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-bold text-lg">{formatCurrency(player.netWorth)}</div>
-                      <div className={`text-sm ${player.growth >= 0 ? 'text-green-600' : 'text-red-600'}`}>{player.growth >= 0 ? '+' : ''}{player.growth}%</div>
-                    </div>
-                  </div>
+              <h3 className="text-xl font-bold text-gray-800 mb-4 text-center flex items-center justify-center gap-2">
+                <Trophy className="w-6 h-6 text-yellow-600" />
+                Final Leaderboard & Investment Strategies
+              </h3>
+              <p className="text-sm text-gray-600 text-center mb-4">
+                Click on each player to see their investment breakdown
+              </p>
+              <div className="space-y-3">
+                {multiplayer.leaderboard.slice(0, 8).map((player, index) => (
+                  <PlayerInvestmentBreakdown
+                    key={player.id}
+                    player={player}
+                    rank={index}
+                    isCurrentPlayer={player.id === multiplayer.myPlayerId}
+                    onExpand={() => requestPlayerBreakdown(player.id)}
+                    breakdown={(() => {
+                      // If server provided a breakdown for this player, use it
+                      if (Array.isArray(player.breakdown) && player.breakdown.length > 0) {
+                        return player.breakdown;
+                      }
+                      // Use cached breakdown fetched on demand
+                      if (breakdownCache[player.id]) return breakdownCache[player.id];
+                      // If server provided allocations or category totals as an object, transform it
+                      const objectToBreakdown = (obj) => {
+                        if (!obj || typeof obj !== 'object') return [];
+                        const colorMap = {
+                          Cash: 'bg-blue-500', Savings: 'bg-cyan-500', 'Fixed Deposits': 'bg-indigo-500', Gold: 'bg-yellow-500',
+                          Stocks: 'bg-blue-600', 'Mutual Funds': 'bg-purple-600', 'Index Funds': 'bg-violet-500', Commodities: 'bg-amber-600',
+                          REITs: 'bg-orange-500', Crypto: 'bg-green-500', Forex: 'bg-teal-500'
+                        };
+                        return Object.entries(obj)
+                          .map(([k, v]) => ({ category: k, value: Number(v) || 0, color: colorMap[k] || 'bg-gray-400' }))
+                          .filter(item => item.value > 0);
+                      };
+                      const fromAlloc = objectToBreakdown(player.allocations || player.categoryTotals || player.portfolioTotals);
+                      if (fromAlloc.length > 0) return fromAlloc;
+                      // Compute breakdown for the current local player using live state
+                      if (player.id === multiplayer.myPlayerId) {
+                        const items = [];
+                        // Cash
+                        items.push({ category: 'Cash', value: pocketCash, color: 'bg-blue-500' });
+                        // Savings
+                        items.push({ category: 'Savings', value: investments?.savings?.amount || 0, color: 'bg-cyan-500' });
+                        // Fixed Deposits (principal + accrued profit shown as value on summary screens elsewhere)
+                        const fdTotal = (investments?.fixedDeposits || []).reduce((sum, fd) => sum + (fd.amount || 0) + (fd.profit || 0), 0);
+                        items.push({ category: 'Fixed Deposits', value: fdTotal, color: 'bg-indigo-500' });
+                        // Gold (server/client uses price per 10g; convert to per gram)
+                        if (investments?.gold?.grams) {
+                          const goldPricePer10g = getCurrentGoldPrice(currentMonth);
+                          const goldPricePerGram = goldPricePer10g / 10;
+                          items.push({ category: 'Gold', value: (investments.gold.grams || 0) * goldPricePerGram, color: 'bg-yellow-500' });
+                        }
+                        // Helper for priced arrays
+                        const addCategory = (key, label, color) => {
+                          const arr = investments?.[key];
+                          if (!Array.isArray(arr) || arr.length === 0) return;
+                          const val = arr.reduce((sum, item) => {
+                            const units = item.units || item.shares || 0;
+                            const price = getCurrentPrice(item.id, currentMonth);
+                            return sum + (units * price);
+                          }, 0);
+                          if (val > 0) items.push({ category: label, value: val, color });
+                        };
+                        addCategory('stocks', 'Stocks', 'bg-blue-600');
+                        addCategory('mutualFunds', 'Mutual Funds', 'bg-purple-600');
+                        addCategory('indexFunds', 'Index Funds', 'bg-violet-500');
+                        addCategory('commodities', 'Commodities', 'bg-amber-600');
+                        addCategory('reit', 'REITs', 'bg-orange-500');
+                        addCategory('crypto', 'Crypto', 'bg-green-500');
+                        addCategory('forex', 'Forex', 'bg-teal-500');
+                        return items.filter(i => i.value > 0);
+                      }
+                      // No data available for other players unless server sends it
+                      return [];
+                    })()}
+                  />
                 ))}
               </div>
             </div>

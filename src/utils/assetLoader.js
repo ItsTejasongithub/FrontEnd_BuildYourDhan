@@ -1,8 +1,9 @@
+import { dataUrl } from './assetUrl';
 // assetLoader.js - Handles all CSV loading and asset timeline logic
 
 export const loadAssetTimeline = async () => {
   try {
-    const response = await fetch('/data/Asset_Timeline.csv');
+    const response = await fetch(dataUrl('Asset_Timeline.csv'));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
     const lines = text.trim().split('\n');
@@ -30,10 +31,10 @@ export const loadAssetTimeline = async () => {
 
 export const loadCSVData = async (filename, folder) => {
   try {
-    const response = await fetch(`/data/${folder}/${filename}`);
+    const response = await fetch(dataUrl(`${folder}/${filename}`));
     if (!response.ok) {
       console.error(`❌ Failed to fetch ${folder}/${filename}: HTTP ${response.status}`);
-      console.error(`   Check if file exists in public/data/${folder}/${filename}`);
+      console.error(`   Check if file exists at ${dataUrl(`${folder}/${filename}`)}`);
       return null;
     }
     
@@ -151,7 +152,7 @@ export const loadAssetData = async (assets, folderName) => {
 
 export const loadFDRates = async () => {
   try {
-    const response = await fetch('/data/Fd_Rate/fd_rates.csv');
+    const response = await fetch(dataUrl('Fd_Rate/fd_rates.csv'));
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
     const lines = text.trim().split('\n').filter(line => line.trim());
@@ -235,7 +236,7 @@ export const validateAssetFiles = async (assetDefinitions) => {
   const missingFiles = [];
 
   for (const asset of assetDefinitions) {
-    const url = `/data/${asset.category}/${asset.csvFile}`;
+    const url = dataUrl(`${asset.category}/${asset.csvFile}`);
     try {
       const response = await fetch(url, { method: 'HEAD' });
       if (!response.ok) {
