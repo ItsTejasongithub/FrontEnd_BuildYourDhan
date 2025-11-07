@@ -2614,18 +2614,15 @@ const handleEvent = (event) => {
   const delta = event.type === 'loss' ? -Math.abs(event.amount || 0) : Math.abs(event.amount || 0);
 
   if (event.type === 'loss') {
-    if (pocketCash >= Math.abs(delta)) {
-      setPocketCash(prev => prev + delta);
-      setMajorExpenses(prev => [...prev, { 
-        month: currentMonth, 
-        description: event.message, 
-        amount: delta 
-      }]);
-    } else {
-      setShowToast({ ...event, needFunds: true });
-      setIsPaused(true);
-      return;
-    }
+    // Always deduct the amount, allowing negative cash (same as multi mode)
+    const required = Math.abs(delta);
+    setPocketCash(prev => prev - required);
+    setMajorExpenses(prev => [...prev, {
+      month: currentMonth,
+      description: event.message,
+      amount: -required
+    }]);
+    // Do not pause; a persistent debt banner will warn while cash < 0
   } else if (event.type === 'gain') {
     setPocketCash(prev => prev + delta);
   }
