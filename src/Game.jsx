@@ -1324,8 +1324,11 @@ function App() {
   const [selectedStock, setSelectedStock] = useState(null);
   const [showStockModal, setShowStockModal] = useState(false);
   const [stockAmounts, setStockAmounts] = useState({});
+  const [stockTradeModes, setStockTradeModes] = useState({}); // Track buy/sell mode per stock
   const [mutualFundAmounts, setMutualFundAmounts] = useState({});
+  const [mutualFundTradeModes, setMutualFundTradeModes] = useState({}); // Track buy/sell mode per MF
   const [assetAmounts, setAssetAmounts] = useState({});
+  const [assetTradeModes, setAssetTradeModes] = useState({}); // Track buy/sell mode per asset
   const [goldQty, setGoldQty] = useState(10);
   const [stockAmount, setStockAmount] = useState(1);
   const [networthHistory, setNetworthHistory] = useState([]);
@@ -1719,6 +1722,11 @@ const MutualFundCard = ({ fund }) => {
   const setCurrentMFAmount = (value) => {
     setMutualFundAmounts(prev => ({ ...prev, [fund.id]: value }));
   };
+  // Buy/Sell mode state - use parent state to persist
+  const tradeMode = mutualFundTradeModes[fund.id] || 'buy';
+  const setTradeMode = (mode) => {
+    setMutualFundTradeModes(prev => ({ ...prev, [fund.id]: mode }));
+  };
 
   // Month-over-month change and sparkline (to match AssetCard visuals)
   const prevNAV = currentMonth > 0 ? getCurrentPrice(fund.id, currentMonth - 1) : currentNAV;
@@ -1820,38 +1828,121 @@ const MutualFundCard = ({ fund }) => {
         </div>
       )}
 
+      {/* Buy/Sell Mode Toggle */}
+      <div className="mb-3">
+        <label className="text-xs text-gray-600 mb-2 block">Action</label>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => { setTradeMode('buy'); setCurrentMFAmount(5000); }}
+            className={`py-2 rounded text-sm font-semibold transition-colors ${
+              tradeMode === 'buy'
+                ? 'bg-green-600 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            Invest
+          </button>
+          <button
+            onClick={() => {
+              if (myUnits > 0) {
+                setTradeMode('sell');
+                // For sell, calculate units worth ₹5000 or all units if less
+                const unitsWorth5k = Math.min(myUnits, 5000 / currentNAV);
+                setCurrentMFAmount(Math.floor(unitsWorth5k * currentNAV));
+              }
+            }}
+            className={`py-2 rounded text-sm font-semibold transition-colors ${
+              myUnits === 0
+                ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-60'
+                : tradeMode === 'sell'
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+            disabled={myUnits === 0}
+          >
+            Redeem
+          </button>
+        </div>
+      </div>
+
       {/* Investment amount selector */}
       <div className="mb-3">
-        <label className="text-xs text-gray-600 mb-2 block">Select Amount</label>
+        <label className="text-xs text-gray-600 mb-2 block">
+          {tradeMode === 'buy' ? 'Investment Amount' : 'Redemption Amount'}
+        </label>
         <div className="grid grid-cols-2 gap-1">
           <button onClick={() => setCurrentMFAmount(5000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 5000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹5K</button>
           <button onClick={() => setCurrentMFAmount(10000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 10000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹10K</button>
           <button onClick={() => setCurrentMFAmount(25000)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === 25000 ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>₹25K</button>
-          <button onClick={() => setCurrentMFAmount(pocketCash)} className={`py-2 rounded text-xs font-semibold transition-colors ${currentMFAmount === pocketCash ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`} title="Max affordable">MAX</button>
+          <button
+            onClick={() => {
+              if (tradeMode === 'buy') {
+                // BUY mode: Set to total available pocket cash
+                setCurrentMFAmount(pocketCash);
+              } else {
+                // SELL mode: Set to total value of owned units
+                setCurrentMFAmount(Math.floor(myUnits * currentNAV));
+              }
+            }}
+            className={`py-2 rounded text-xs font-semibold transition-colors ${
+              (tradeMode === 'buy' && currentMFAmount === pocketCash) ||
+              (tradeMode === 'sell' && currentMFAmount === Math.floor(myUnits * currentNAV))
+                ? 'bg-purple-600 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+            title={tradeMode === 'buy' ? 'All pocket cash' : 'All owned units value'}
+          >
+            MAX
+          </button>
+        </div>
+        <div className="text-xs text-gray-600 mt-2 text-center">
+          {tradeMode === 'buy'
+            ? `Units: ${(currentMFAmount / currentNAV).toFixed(3)}`
+            : `Units to redeem: ${(currentMFAmount / currentNAV).toFixed(3)}`
+          }
         </div>
       </div>
 
-      {/* Actions */}
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => {
-          if (currentMFAmount > pocketCash) {
-            setIsShaking(true);
-            setTimeout(() => setIsShaking(false), 400);
-            return;
+      {/* Single Action Button */}
+      <div className="grid grid-cols-1 gap-2">
+        <button
+          onClick={() => {
+            if (tradeMode === 'buy') {
+              if (currentMFAmount > pocketCash) {
+                setIsShaking(true);
+                setTimeout(() => setIsShaking(false), 400);
+                return;
+              }
+              if (mode === 'multiplayer' && multiplayer.socket) {
+                multiplayer.buyMutualFund(fund.id, currentMFAmount);
+              } else {
+                buyMutualFund(fund.id, currentMFAmount);
+              }
+            } else {
+              // Sell mode - calculate units to sell
+              const unitsToSell = Math.min(myUnits, currentMFAmount / currentNAV);
+              if (mode === 'multiplayer' && multiplayer.socket) {
+                multiplayer.sellMutualFund(fund.id, unitsToSell);
+              } else {
+                sellMutualFund(fund.id, unitsToSell);
+              }
+            }
+          }}
+          disabled={
+            (tradeMode === 'buy' && currentMFAmount > pocketCash) ||
+            (tradeMode === 'sell' && myUnits === 0)
           }
-          if (mode === 'multiplayer' && multiplayer.socket) {
-            multiplayer.buyMutualFund(fund.id, currentMFAmount);
-          } else {
-            buyMutualFund(fund.id, currentMFAmount);
+          className={`${
+            tradeMode === 'buy'
+              ? 'bg-green-600 hover:bg-green-700'
+              : 'bg-red-600 hover:bg-red-700'
+          } disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors`}
+        >
+          {tradeMode === 'buy'
+            ? `Invest ${formatCurrency(currentMFAmount)}`
+            : `Redeem ${formatCurrency(currentMFAmount)}`
           }
-        }} disabled={currentMFAmount > pocketCash} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors">Invest</button>
-        <button onClick={() => {
-          if (mode === 'multiplayer' && multiplayer.socket) {
-            multiplayer.sellMutualFund(fund.id, myUnits);
-          } else {
-            sellMutualFund(fund.id, myUnits);
-          }
-        }} disabled={myUnits === 0} className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors">Redeem All</button>
+        </button>
       </div>
     </div>
   );
@@ -1865,18 +1956,25 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
   const gifTimeoutRef = React.useRef(null);
   const currentPrice = getCurrentPrice(asset.id, currentMonth);
   const myAsset = investments[category]?.find(a => a.id === asset.id);
-  
+
+  // Buy/Sell mode state - use parent state to persist
+  const assetKey = `${category}_${asset.id}`;
+  const tradeMode = assetTradeModes[assetKey] || 'buy';
+  const setTradeMode = (mode) => {
+    setAssetTradeModes(prev => ({ ...prev, [assetKey]: mode }));
+  };
+
   // Previous month price for change calculation
   const prevPrice = currentMonth > 0 ? getCurrentPrice(asset.id, currentMonth - 1) : currentPrice;
   const monthChange = prevPrice > 0 ? ((currentPrice - prevPrice) / prevPrice * 100) : 0;
-  
+
   // User's holdings
   const myUnits = myAsset?.units || 0;
   const avgPrice = myAsset?.avgPrice || 0;
   const currentValue = myUnits * currentPrice;
   const profitLoss = myUnits > 0 ? currentValue - (myUnits * avgPrice) : 0;
   const profitLossPercent = myUnits > 0 ? ((currentPrice - avgPrice) / avgPrice * 100) : 0;
-  
+
   // Cost calculation
   const totalCost = currentPrice * amount;
   
@@ -2019,6 +2117,41 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
         </div>
       )}
 
+      {/* Buy/Sell Mode Toggle */}
+      <div className="mb-3">
+        <label className="text-xs text-gray-600 mb-2 block">Action</label>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => { setTradeMode('buy'); setAmount(1); }}
+            className={`py-2 rounded text-sm font-semibold transition-colors ${
+              tradeMode === 'buy'
+                ? 'bg-green-600 text-white'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            Buy
+          </button>
+          <button
+            onClick={() => {
+              if (myUnits > 0) {
+                setTradeMode('sell');
+                setAmount(1);
+              }
+            }}
+            className={`py-2 rounded text-sm font-semibold transition-colors ${
+              myUnits === 0
+                ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-60'
+                : tradeMode === 'sell'
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+            disabled={myUnits === 0}
+          >
+            Sell
+          </button>
+        </div>
+      </div>
+
       {/* Quantity Selector */}
       <div className="mb-3">
         <label className="text-xs text-gray-600 mb-2 block">Select Quantity</label>
@@ -2055,39 +2188,55 @@ const AssetCard = ({ asset, category, categoryDisplayName, amount, setAmount }) 
           </button>
           <button
             onClick={() => {
-              const maxAmount = Math.floor(pocketCash / currentPrice);
-              setAmount(maxAmount);
+              if (tradeMode === 'buy') {
+                // BUY mode: Calculate max units we can afford
+                const maxAmount = Math.floor(pocketCash / currentPrice);
+                setAmount(maxAmount);
+              } else {
+                // SELL mode: Set to total owned units
+                setAmount(myUnits);
+              }
             }}
             className={`py-1.5 rounded text-xs font-semibold transition-colors ${
-              amount !== 1 && amount !== 10 && amount !== 100 && amount > 0
+              (tradeMode === 'buy' && amount === Math.floor(pocketCash / currentPrice)) ||
+              (tradeMode === 'sell' && amount === myUnits)
                 ? 'bg-purple-600 text-white'
                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
             }`}
-            title="Max affordable"
+            title={tradeMode === 'buy' ? 'Max affordable units' : 'All owned units'}
           >
             MAX
           </button>
         </div>
         <div className="text-xs text-gray-600 mt-2 text-center">
-          Total: {formatCurrency(totalCost)}
+          {tradeMode === 'buy'
+            ? `Cost: ${formatCurrency(totalCost)}`
+            : `Revenue: ${formatCurrency(totalCost)}`
+          }
         </div>
       </div>
 
-      {/* Buy/Sell Buttons */}
-      <div className="grid grid-cols-2 gap-2">
-        <button 
-          onClick={handleBuy}
-          disabled={totalCost > pocketCash}
-          className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors"
+      {/* Single Action Button */}
+      <div className="grid grid-cols-1 gap-2">
+        <button
+          onClick={() => {
+            if (tradeMode === 'buy') {
+              handleBuy();
+            } else {
+              handleSell();
+            }
+          }}
+          disabled={
+            (tradeMode === 'buy' && totalCost > pocketCash) ||
+            (tradeMode === 'sell' && myUnits === 0)
+          }
+          className={`${
+            tradeMode === 'buy'
+              ? 'bg-green-600 hover:bg-green-700'
+              : 'bg-red-600 hover:bg-red-700'
+          } disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors`}
         >
-          Buy
-        </button>
-        <button 
-          onClick={handleSell}
-          disabled={myUnits === 0}
-          className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white py-2 rounded text-sm font-semibold transition-colors"
-        >
-          Sell
+          {tradeMode === 'buy' ? 'Buy' : 'Sell'} {amount} Units
         </button>
       </div>
     </div>
@@ -2521,10 +2670,11 @@ const handleEvent = (event) => {
   }
 
   // For multiplayer, availableInvestments comes from server
-  // Always show unlock notification
+  // Show unlock notification without pausing (TODO: Add Q&A in future release)
   if (event.unlock) {
     console.log(`🔓 Unlock event detected: ${event.unlock}`);
-    setIsPaused(true);
+    // TODO: Future release - Add Q&A before unlocking, game waits for answer
+    // setIsPaused(true);
   }
 };
 
@@ -3416,6 +3566,16 @@ const StockCard = ({ stock }) => {
     const setCurrentStockAmount = (value) => {
       setStockAmounts(prev => ({ ...prev, [stock.id]: value }));
     };
+    // Buy/Sell mode state - needs to be in parent state to persist across re-renders
+    const tradeMode = stockTradeModes[stock.id] || 'buy';
+    const setTradeMode = (mode) => {
+      setStockTradeModes(prev => ({ ...prev, [stock.id]: mode }));
+    };
+
+    // Debug log - uncomment for debugging
+    // React.useEffect(() => {
+    //   console.log(`StockCard ${stock.id}: myShares=${myShares}, tradeMode=${tradeMode}`);
+    // }, [myShares, tradeMode, stock.id]);
     // Simple sparkline - just get last 12 months of data
     const sparklineData = React.useMemo(() => {
       const history = [];
@@ -3504,6 +3664,49 @@ const StockCard = ({ stock }) => {
           </div>
         )}
 
+        {/* Buy/Sell Mode Toggle */}
+        <div className="mb-3">
+          <label className="text-xs text-gray-600 mb-2 block">
+            Action {myShares > 0 && <span className="text-green-600 font-semibold">(You own {myShares} shares)</span>}
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => { setTradeMode('buy'); setCurrentStockAmount(1); }}
+              className={`py-2 rounded text-sm font-semibold transition-colors ${
+                tradeMode === 'buy'
+                  ? 'bg-green-600 text-white'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Buy
+            </button>
+            <button
+              onClick={() => {
+                // Debug logs - uncomment for debugging
+                // console.log(`Sell button clicked: myShares=${myShares}, disabled=${myShares === 0}`);
+                if (myShares > 0) {
+                  // console.log('Setting tradeMode to sell');
+                  setTradeMode('sell');
+                  setCurrentStockAmount(1);
+                } else {
+                  // console.warn('Cannot sell - no shares owned');
+                }
+              }}
+              className={`py-2 rounded text-sm font-semibold transition-colors ${
+                myShares === 0
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-60'
+                  : tradeMode === 'sell'
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+              disabled={myShares === 0}
+              title={myShares === 0 ? 'No shares to sell' : `Sell ${myShares} shares`}
+            >
+              Sell {myShares > 0 && `(${myShares})`}
+            </button>
+          </div>
+        </div>
+
         {/* Quantity Selector */}
         <div className="mb-3">
           <label className="text-xs text-gray-600 mb-2 block">Select Quantity</label>
@@ -3511,8 +3714,8 @@ const StockCard = ({ stock }) => {
             <button
               onClick={() => setCurrentStockAmount(1)}
               className={`py-1.5 rounded text-xs font-semibold transition-colors ${
-                currentStockAmount === 1 
-                  ? 'bg-blue-600 text-white' 
+                currentStockAmount === 1
+                  ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
@@ -3521,8 +3724,8 @@ const StockCard = ({ stock }) => {
             <button
               onClick={() => setCurrentStockAmount(10)}
               className={`py-1.5 rounded text-xs font-semibold transition-colors ${
-                currentStockAmount === 10 
-                  ? 'bg-blue-600 text-white' 
+                currentStockAmount === 10
+                  ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
@@ -3531,36 +3734,62 @@ const StockCard = ({ stock }) => {
             <button
               onClick={() => setCurrentStockAmount(100)}
               className={`py-1.5 rounded text-xs font-semibold transition-colors ${
-                currentStockAmount === 100 
-                  ? 'bg-blue-600 text-white' 
+                currentStockAmount === 100
+                  ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               100
             </button>
             <button
-              onClick={() => setCurrentStockAmount(Math.floor(pocketCash / currentPrice))}
+              onClick={() => {
+                if (tradeMode === 'buy') {
+                  // BUY mode: Calculate max units we can afford
+                  setCurrentStockAmount(Math.floor(pocketCash / currentPrice));
+                } else {
+                  // SELL mode: Set to total owned shares
+                  setCurrentStockAmount(myShares);
+                }
+              }}
               className={`py-1.5 rounded text-xs font-semibold transition-colors ${
-                currentStockAmount === Math.floor(pocketCash / currentPrice)
-                  ? 'bg-blue-600 text-white' 
+                (tradeMode === 'buy' && currentStockAmount === Math.floor(pocketCash / currentPrice)) ||
+                (tradeMode === 'sell' && currentStockAmount === myShares)
+                  ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
-              title="Max affordable"
+              title={tradeMode === 'buy' ? 'Max affordable units' : 'All owned shares'}
             >
               MAX
             </button>
           </div>
           <div className="text-xs text-gray-600 mt-2 text-center">
-            Cost: {formatCurrency(currentPrice * currentStockAmount)}
+            {tradeMode === 'buy'
+              ? `Cost: ${formatCurrency(currentPrice * currentStockAmount)}`
+              : `Revenue: ${formatCurrency(currentPrice * currentStockAmount)}`
+            }
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={() => buyStock(stock.id, currentStockAmount)} disabled={currentPrice * currentStockAmount > pocketCash} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold">
-            Buy
-          </button>
-          <button onClick={() => sellStock(stock.id, currentStockAmount)} disabled={myShares < currentStockAmount} className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold">
-            Sell
+        <div className="grid grid-cols-1 gap-2">
+          <button
+            onClick={() => {
+              if (tradeMode === 'buy') {
+                buyStock(stock.id, currentStockAmount);
+              } else {
+                sellStock(stock.id, currentStockAmount);
+              }
+            }}
+            disabled={
+              (tradeMode === 'buy' && currentPrice * currentStockAmount > pocketCash) ||
+              (tradeMode === 'sell' && myShares < currentStockAmount)
+            }
+            className={`${
+              tradeMode === 'buy'
+                ? 'bg-green-600 hover:bg-green-700'
+                : 'bg-red-600 hover:bg-red-700'
+            } disabled:bg-gray-400 text-white py-2 rounded text-sm font-semibold`}
+          >
+            {tradeMode === 'buy' ? 'Buy' : 'Sell'} {currentStockAmount} Shares
           </button>
         </div>
       </div>
@@ -3846,7 +4075,7 @@ const StockCard = ({ stock }) => {
 
         {/* Persistent debt banner while pocket cash is negative (centered top, non-blocking) */}
         {pocketCash < 0 && (
-          <div className="fixed top-2 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-lg bg-red-50 border border-red-300 shadow text-red-800 text-sm font-semibold flex items-center gap-2">
+          <div className="fixed top-2 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-lg bg-red-50 border border-red-300 shadow text-red-800 text-xl font-semibold flex items-center gap-2 mt-5">
             <span>😕 You are in debt:</span>
             <span className="font-bold">{formatCurrency(pocketCash)}</span>
             <span className="text-red-700 font-normal">Try To Pay Off Your Debt First.</span>
